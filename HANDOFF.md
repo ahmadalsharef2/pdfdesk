@@ -53,7 +53,15 @@ Action Wizard all call the same commands).
 - **Security-preserving save** (`core/security.py`): PyMuPDF 2.0 drops encryption on any full save, so pdfdesk
   keeps the passwords and permissions with the document and re-applies them on save, and refuses to write an
   unprotected copy silently. Checked.
-- **OCR** (`ocr.py`): OCRmyPDF + Tesseract on a scan; the words come back searchable.
+- **OCR** (`ocr.py`): two outputs. *Searchable* (`Ocr.Run`): OCRmyPDF + Tesseract, invisible text under the
+  image. *Editable* (`Ocr.Editable`, Ahmad's preferred one, like Foxit's "Editable Text"): Tesseract finds
+  lines and confidences, each line is painted out with the sampled background colour and set back as real
+  visible text (size normalised per paragraph, bold guessed from ink density, text scaled to the line width);
+  pictures stay as the background. Checked on two rasterised manual pages: 97.4% word recall against the real
+  text, and `Text.EditLine` / `Text.Replace` work on the result. Limits: one sans font for everything,
+  occasional wrong bold, no deskew/rotation handling, no OCR-suspects panel yet (the list of low-confidence
+  words is returned but not shown). Foxit's engine is ABBYY; Tesseract is the open-source stand-in and was not
+  benchmarked against it.
 - **Compare** (`compare.py`): word-stream diff over the whole document; found exactly the planted replacement
   and insertion on the contract v1/v2 pair; result PDF has a summary page and side-by-side pages with
   annotations. Not done: formatting, table, whole-page and image-replacement changes (image code untested).
@@ -75,12 +83,18 @@ Action Wizard all call the same commands).
 
 ### Written but not exercised
 
-- **The GUI** (`pdfdesk/gui/`): `app.py` (ribbon with Foxit's 14 tabs, document tabs, side panels, undo/redo,
-  save), `viewer.py` (continuous scroll, mouse tools, inline text editor, snapshot undo), `dialogs.py`,
-  `panels.py` (page thumbnails with drag-reorder, bookmarks, comments list). All imported and constructed in
-  an offscreen run: the window opened Foxit's 446-page manual with 14 ribbon tabs and 446 thumbnails. **No
-  mouse tool, dialog or menu has been clicked through on a real screen yet.** Expect bugs there. The first
-  real launch failed only on the missing `libxcb-cursor0`.
+- **The GUI** (`pdfdesk/gui/`), laid out like Foxit PhantomPDF 10 (layout, not style; own icons, purple accent):
+  `ribbon.py` (File tab, 14 tabs, "Tell me what you want to do…" box, Find box, groups with names underneath,
+  large / stacked / icon-grid buttons; Hand and Select at the left of most tabs), `app.py` (quick-access bar,
+  document tabs, navigation pane with an icon strip for Pages / Bookmarks / Comments / Attachments toggled by
+  F4, bottom bar with page navigation, page box and zoom, undo/redo, save), `start.py` (Start page: sidebar,
+  Tool Wizard cards, Recent list), `icons.py` (icons drawn in code), `viewer.py` (continuous scroll, mouse tools,
+  inline text editor, snapshot undo), `dialogs.py`, `panels.py`. It was started offscreen and screenshotted
+  (Start page, Comment tab and Protect tab look right). Through the code path it opened the 446-page manual,
+  ran editable OCR and undid it. **No mouse tool, dialog or menu has been used by hand on a real screen yet.**
+  Expect bugs. Not copied from Foxit: icons, stamps, any asset. The Comment tab groups follow Foxit's real tab
+  (Tools, Text Markup, Pin, Typewriter, Drawing, Stamp, Manage); other tabs follow the manual and are
+  approximate, so send screenshots of a Foxit tab to match it more closely.
 - **`tests/test_gui.py` is stale**: it is the first version and will fail against the new window. The
   rewritten GUI tests were never saved (the user declined them). Delete or rewrite when needed.
 - Ribbon tabs **Form, Share, Connect, Accessibility** only show a "later phase" label. File, Home, Convert,
