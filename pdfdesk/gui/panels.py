@@ -20,9 +20,15 @@ class Thumbnails(QListWidget):
 
     def __init__(self):
         super().__init__()
-        self.setViewMode(QListWidget.ListMode)
+        self.setViewMode(QListWidget.IconMode)      # page above its number, one column
+        self.setFlow(QListWidget.TopToBottom)
+        self.setWrapping(False)
+        self.setMovement(QListWidget.Snap)
+        self.setResizeMode(QListWidget.Adjust)
+        self.setUniformItemSizes(True)
         self.setIconSize(QSize(self.THUMB_W, int(self.THUMB_W * 1.42)))
-        self.setSpacing(4)
+        self.setGridSize(QSize(self.THUMB_W + 24, int(self.THUMB_W * 1.42) + 30))
+        self.setSpacing(2)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setDragDropMode(QAbstractItemView.InternalMove)
         self.setDefaultDropAction(Qt.MoveAction)

@@ -12,5 +12,6 @@ python-docx==1.2.0        # Word files (export, tests)
 python-pptx==1.0.2        # export to PowerPoint
 img2pdf==0.6.3            # lossless image -> PDF (pulled in by OCRmyPDF)
 pillow==13.0.0            # image handling, TIFF export
+numpy==2.5.4              # pixel sampling for editable-text OCR
 cryptography==50.0.2      # digital IDs (.pfx)
 pytest==9.1.1             # tests

@@ -1,4 +1,5 @@
-"""Main window: ribbon tabs as in Foxit 10, document tabs, side panels, mouse tools, undo/redo."""
+"""Main window laid out like Foxit PhantomPDF: ribbon (File tab, tabs, Tell me, Find), quick access toolbar,
+Start page and document tabs, navigation pane with an icon strip, bottom bar with page navigation and zoom."""
 from __future__ import annotations
 
 import getpass
@@ -7,20 +8,22 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import date
 
 import pymupdf
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDockWidget, QFileDialog, QFrame,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
-                               QTabWidget, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QListWidget, QMainWindow, QMessageBox, QSpinBox, QSplitter, QStackedWidget,
+                               QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from ..commands import comment as comment_cmds
 from ..commands import run
 from ..core import security as sec
 from . import dialogs
+from .icons import icon
 from .panels import Bookmarks, Comments, Thumbnails
+from .ribbon import Ribbon
+from .start import StartPage, add_recent
 from .viewer import DocView
 
 RIBBON = ["File", "Home", "Convert", "Edit", "Fill && Sign", "Organize", "Comment", "View", "Form",
@@ -33,7 +36,7 @@ TOOL_HINTS = {
     "select": "Select: drag over text, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
-    "replace-text": "Replace text: drag across the text to replace",
+    "replace-text": "Replace text: drag across the text to replace", "area-highlight": "Area highlight: drag",
     "note": "Note: click where the note goes", "file": "File attachment: click where it goes",
     "typewriter": "Typewriter: click where the text goes", "textbox": "Text box: drag a box",
     "callout": "Callout: drag from the point to the box position",
@@ -49,6 +52,7 @@ TOOL_HINTS = {
 }
 STAMPS = ["Approved", "NotApproved", "Draft", "Final", "Confidential", "ForComment", "ForPublicRelease",
           "NotForPublicRelease", "TopSecret", "Expired", "Sold", "AsIs", "Experimental", "Departmental"]
+ZOOMS = ["25%", "50%", "75%", "100%", "125%", "150%", "200%", "300%", "400%"]
 
 
 def _ranges(pages0: list[int]) -> str:
@@ -73,64 +77,190 @@ class Main(QMainWindow):
         self.tool = "hand"
         self.stamp_name = "Approved"
         self.sig_spec: dict | None = None
-        self.docs = QTabWidget(tabsClosable=True, movable=True, documentMode=True)
-        self.docs.tabCloseRequested.connect(self.close_tab)
-        self.docs.currentChanged.connect(self._tab_changed)
-        self.ribbon = QTabWidget()
-        self.ribbon.setFixedHeight(96)
-        self.tool_group = QButtonGroup(self)
-        self.tool_group.setExclusive(True)
-        self.tool_buttons: dict[str, QToolButton] = {}
-        self.groups: dict[str, QHBoxLayout] = {}
+        self.tool_buttons: dict[str, list[QToolButton]] = {}
+
+        self.ribbon = Ribbon()
+        self.find_box = self.ribbon.find
+        self.find_box.returnPressed.connect(self.do_find)
         for name in RIBBON:
-            w = QWidget()
-            lay = QHBoxLayout(w)
-            lay.setContentsMargins(6, 2, 6, 2)
-            lay.setAlignment(Qt.AlignLeft)
-            self.ribbon.addTab(w, name)
-            self.groups[name.replace("&&", "&")] = lay
+            self.ribbon.add_tab(name)
+        self.groups = self.ribbon.pages
+
         central = QWidget()
         v = QVBoxLayout(central)
         v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
         v.addWidget(self.ribbon)
-        v.addWidget(self.docs)
-        self.setCentralWidget(central)
+        self.qat = self._build_qat()
+        v.addWidget(self.qat)
 
+        # navigation pane: icon strip + panel, left of the document tabs
         self.thumbs, self.bookmarks, self.comments = Thumbnails(), Bookmarks(), Comments()
-        self.side = QTabWidget()
-        self.side.setTabPosition(QTabWidget.West)
-        for w, n in ((self.thumbs, "Pages"), (self.bookmarks, "Bookmarks"), (self.comments, "Comments")):
-            self.side.addTab(w, n)
-        dock = QDockWidget("Navigation", self)
-        dock.setWidget(self.side)
-        dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
-        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-        self.nav_dock = dock
+        self.attachments = QListWidget()
+        self.attachments.itemDoubleClicked.connect(self._save_attachment)
+        self.nav_stack = QStackedWidget()
+        self.nav = QWidget()
+        nl = QHBoxLayout(self.nav)
+        nl.setContentsMargins(0, 0, 0, 0)
+        nl.setSpacing(0)
+        strip = QFrame()
+        strip.setObjectName("navStrip")
+        strip.setStyleSheet("#navStrip{background:#ececec;border-right:1px solid #d0d0d0}")
+        sl = QVBoxLayout(strip)
+        sl.setContentsMargins(3, 4, 3, 4)
+        sl.setSpacing(2)
+        self.nav_buttons = []
+        for i, (w, name, ic) in enumerate(((self.thumbs, "Page thumbnails", "pages"),
+                                           (self.bookmarks, "Bookmarks", "bookmarks"),
+                                           (self.comments, "Comments", "comments"),
+                                           (self.attachments, "Attachments", "attachments"))):
+            self.nav_stack.addWidget(w)
+            b = QToolButton()
+            b.setIcon(icon(ic, 24))
+            b.setIconSize(QSize(22, 22))
+            b.setToolTip(name)
+            b.setCheckable(True)
+            b.setFixedSize(30, 30)
+            b.clicked.connect(lambda _=False, k=i: self._show_nav(k))
+            sl.addWidget(b)
+            self.nav_buttons.append(b)
+        sl.addStretch(1)
+        nl.addWidget(strip)
+        nl.addWidget(self.nav_stack, 1)
+        self.nav.setMinimumWidth(170)
+
+        self.docs = QTabWidget(tabsClosable=True, movable=False, documentMode=True)
+        self.docs.tabCloseRequested.connect(self.close_tab)
+        self.start = StartPage()
+        self.start.openFile.connect(self.open_path)
+        self.start.openDialog.connect(self.open_dialog)
+        self.start.action.connect(self._start_action)
+        self.docs.addTab(self.start, "Start")
+        self.docs.tabBar().setTabButton(0, QTabBar.RightSide, None)
+
+        self.split = QSplitter()
+        self.split.addWidget(self.nav)
+        self.split.addWidget(self.docs)
+        self.split.setStretchFactor(1, 1)
+        self.split.setSizes([230, 1100])
+        self.split.setChildrenCollapsible(False)
+        v.addWidget(self.split, 1)
+        v.addWidget(self._build_bottom_bar())
+        self.setCentralWidget(central)
+        self._show_nav(0)
+        self.nav.setVisible(False)
+
         self.thumbs.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
         self.bookmarks.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
         self.comments.activated.connect(self._focus_comment)
         self.thumbs.reordered.connect(self._reorder)
         self.thumbs.pageCommand.connect(self._page_command)
-
-        self.find_box = QLineEdit(placeholderText="Find")
-        self.find_box.setMaximumWidth(220)
-        self.find_box.returnPressed.connect(self.do_find)
-        self.page_label = QLabel("")
-        self.statusBar().addPermanentWidget(self.find_box)
-        self.statusBar().addPermanentWidget(self.page_label)
         self._build_ribbon()
         self._shortcuts()
         self.set_tool("hand")
+        self.ribbon.set_current("Home")
+        self.docs.currentChanged.connect(self._tab_changed)
+        self._status()
 
     # ---- plumbing ------------------------------------------------------------------------------------
     def cur(self) -> DocView | None:
-        return self.docs.currentWidget()
+        w = self.docs.currentWidget()
+        return w if isinstance(w, DocView) else None
+
+    def _build_qat(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("qat")
+        bar.setStyleSheet("#qat{background:#f3f3f3}")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(6, 1, 6, 1)
+        h.setSpacing(1)
+        T = Ribbon.tiny
+        for ic, tip, fn in (("open", "Open (Ctrl+O)", self.open_dialog), ("save", "Save (Ctrl+S)", self.save),
+                            ("print", "Print (Ctrl+P)", self.print_doc), ("undo", "Undo (Ctrl+Z)", self.undo),
+                            ("redo", "Redo (Ctrl+Y)", self.redo)):
+            h.addWidget(T(ic, tip, fn))
+        h.addSpacing(8)
+        for tool, ic in (("hand", "hand"), ("select", "select")):
+            b = T(ic, TOOL_HINTS[tool], lambda t=tool: self.set_tool(t), checkable=True)
+            self.tool_buttons.setdefault(tool, []).append(b)
+            h.addWidget(b)
+        h.addStretch(1)
+        return bar
+
+    def _build_bottom_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("bottomBar")
+        bar.setStyleSheet("#bottomBar{background:#f3f3f3;border-top:1px solid #d5d5d5}")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(8, 2, 8, 2)
+        self.msg_label = QLabel("")
+        self.msg_label.setStyleSheet("color:#555")
+        h.addWidget(self.msg_label, 1)
+        T = Ribbon.tiny
+        h.addWidget(T("first", "First page", lambda: self.cur() and self.cur().goto(0)))
+        h.addWidget(T("prev", "Previous page", lambda: self.cur() and self.cur().goto(self.cur().current_page() - 1)))
+        self.page_spin = QSpinBox(minimum=1, maximum=1)
+        self.page_spin.setFixedWidth(64)
+        self.page_spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.page_spin.setAlignment(Qt.AlignCenter)
+        self.page_spin.editingFinished.connect(lambda: self.cur() and self.cur().goto(self.page_spin.value() - 1))
+        h.addWidget(self.page_spin)
+        self.page_total = QLabel("/ 0")
+        h.addWidget(self.page_total)
+        h.addWidget(T("next", "Next page", lambda: self.cur() and self.cur().goto(self.cur().current_page() + 1)))
+        h.addWidget(T("last", "Last page", lambda: self.cur() and self.cur().goto(self.cur().doc.page_count - 1)))
+        h.addStretch(1)
+        h.addWidget(T("fit-width", "Fit width", lambda: self.cur() and self.cur().fit_width()))
+        h.addWidget(T("fit-page", "Fit page (Ctrl+0)", lambda: self.cur() and self.cur().fit_page()))
+        self.zoom_box = QComboBox(editable=True)
+        self.zoom_box.addItems(ZOOMS)
+        self.zoom_box.setFixedWidth(84)
+        self.zoom_box.activated.connect(lambda _: self._zoom_text())
+        self.zoom_box.lineEdit().returnPressed.connect(self._zoom_text)
+        h.addWidget(self.zoom_box)
+        h.addWidget(T("zoom-out", "Zoom out", lambda: self._zoom(0.8)))
+        h.addWidget(T("zoom-in", "Zoom in", lambda: self._zoom(1.25)))
+        return bar
+
+    def _zoom_text(self):
+        v = self.cur()
+        try:
+            pct = float(self.zoom_box.currentText().strip().rstrip("%"))
+        except ValueError:
+            return
+        if v:
+            v.set_zoom(pct / 100)
+
+    def _show_nav(self, k: int):
+        self.nav_stack.setCurrentIndex(k)
+        for i, b in enumerate(self.nav_buttons):
+            b.setChecked(i == k)
+        self.nav.setVisible(True)
+
+    def toggle_nav(self):
+        self.nav.setVisible(not self.nav.isVisible())
+
+    def _start_action(self, act: str):
+        if act == "create":
+            return self.create_from_file()
+        if act == "merge":
+            return self.combine_files()
+        self.open_dialog()
+        if self.cur():
+            if act == "edit":
+                self.ribbon.set_current("Edit")
+                self.set_tool("edit-text")
+            else:
+                self.ribbon.set_current("Organize")
+                self._show_nav(0)
 
     def _shortcuts(self):
         for key, fn in (("Ctrl+O", self.open_dialog), ("Ctrl+S", self.save), ("Ctrl+Shift+S", self.save_as),
-                        ("Ctrl+F", self.find_box.setFocus), ("Ctrl+W", lambda: self.close_tab(self.docs.currentIndex())),
+                        ("Ctrl+F", self.find_box.setFocus), ("Alt+Q", self.ribbon.tellme.setFocus),
+                        ("Ctrl+W", lambda: self.close_tab(self.docs.currentIndex())),
                         ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
-                        ("Ctrl+P", self.print_doc), ("Ctrl+0", lambda: self.cur() and self.cur().fit_page()),
+                        ("Ctrl+P", self.print_doc), ("F4", self.toggle_nav),
+                        ("Ctrl+0", lambda: self.cur() and self.cur().fit_page()),
                         ("Ctrl+=", lambda: self._zoom(1.25)), ("Ctrl+-", lambda: self._zoom(0.8))):
             a = QAction(self)
             a.setShortcut(QKeySequence(key))
@@ -163,163 +293,203 @@ class Main(QMainWindow):
         self.thumbs.set_document(d)
         self.bookmarks.set_document(d)
         self.comments.set_document(d)
+        self.attachments.clear()
+        if d is not None:
+            for name in d.embfile_names():
+                self.attachments.addItem(name)
+
+    def _save_attachment(self, item):
+        v = self.cur()
+        if v:
+            dst = QFileDialog.getSaveFileName(self, "Save attachment", item.text())[0]
+            if dst:
+                with open(dst, "wb") as f:
+                    f.write(v.doc.embfile_get(item.text()))
 
     def _status(self):
         v = self.cur()
-        self.page_label.setText(f"  Page {v.current_page() + 1} / {v.doc.page_count}   {int(v.zoom * 100)}%  "
-                                if v else "")
+        self.page_spin.blockSignals(True)
+        if v:
+            self.page_spin.setMaximum(max(1, v.doc.page_count))
+            self.page_spin.setValue(v.current_page() + 1)
+            self.page_total.setText(f"/ {v.doc.page_count}")
+            self.zoom_box.setEditText(f"{int(round(v.zoom * 100))}%")
+        else:
+            self.page_spin.setMaximum(1)
+            self.page_total.setText("/ 0")
+        self.page_spin.blockSignals(False)
 
     def msg(self, text: str, ms: int = 5000):
-        self.statusBar().showMessage(text, ms)
+        self.msg_label.setText(text)
 
     def error(self, title: str, e: Exception | str):
         QMessageBox.warning(self, title, str(e))
 
-    # ---- ribbon construction ----------------------------------------------------------------------
-    def _group(self, tab: str, title: str, items: list):
-        box = QWidget()
-        col = QVBoxLayout(box)
-        col.setContentsMargins(4, 0, 4, 0)
-        col.setSpacing(0)
-        row = QHBoxLayout()
-        row.setSpacing(2)
-        for it in items:
-            row.addWidget(it)
-        col.addLayout(row)
-        lab = QLabel(title)
-        lab.setAlignment(Qt.AlignCenter)
-        lab.setStyleSheet("color:#777;font-size:10px")
-        col.addWidget(lab)
-        lay = self.groups[tab]
-        lay.addWidget(box)
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet("color:#ccc")
-        lay.addWidget(sep)
+    # ---- ribbon construction (layout follows Foxit's tabs and groups) -------------------------------
+    def _reg(self, label: str, fn):
+        self.ribbon.register(label, fn)
+        return fn
 
-    def B(self, label, fn, tip: str | None = None) -> QToolButton:
-        b = QToolButton(text=label)
-        b.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        b.setMinimumSize(58, 46)
-        b.clicked.connect(lambda: fn())
-        if tip:
-            b.setToolTip(tip)
+    def L(self, text, ic, fn, tip=None):
+        self._reg(text, fn)
+        return Ribbon.large(text, ic, fn, tip=tip)
+
+    def S(self, text, ic, fn, tip=None):
+        self._reg(text, fn)
+        return Ribbon.small(text, ic, fn, tip=tip)
+
+    def LM(self, text, ic, entries):
+        for t, f in entries:
+            self._reg(f"{text}: {t}", f)
+        return Ribbon.large(text, ic, menu=entries)
+
+    def TL(self, text, tool, ic=None):
+        """Large checkable tool button."""
+        self._reg(text, lambda t=tool: self.set_tool(t))
+        b = Ribbon.large(text, ic or tool, lambda t=tool: self.set_tool(t), checkable=True, tip=TOOL_HINTS.get(tool))
+        self.tool_buttons.setdefault(tool, []).append(b)
         return b
 
-    def T(self, label, tool: str) -> QToolButton:
-        b = QToolButton(text=label)
-        b.setCheckable(True)
-        b.setMinimumSize(58, 46)
-        b.setToolTip(TOOL_HINTS.get(tool, ""))
-        self.tool_group.addButton(b)
-        self.tool_buttons[tool] = b
-        b.clicked.connect(lambda: self.set_tool(tool))
+    def TS(self, text, tool, ic=None):
+        self._reg(text, lambda t=tool: self.set_tool(t))
+        b = Ribbon.small(text, ic or tool, lambda t=tool: self.set_tool(t), checkable=True, tip=TOOL_HINTS.get(tool))
+        self.tool_buttons.setdefault(tool, []).append(b)
         return b
 
-    def M(self, label, entries: list[tuple[str, callable]]) -> QToolButton:
-        b = QToolButton(text=label + " ▾")
-        b.setMinimumSize(58, 46)
-        b.setPopupMode(QToolButton.InstantPopup)
-        m = QMenu(b)
-        for text, fn in entries:
-            m.addAction(text, fn)
-        b.setMenu(m)
+    def TI(self, tip, tool, ic=None):
+        """Icon-only checkable tool button for grids."""
+        self._reg(tip, lambda t=tool: self.set_tool(t))
+        b = Ribbon.tiny(ic or tool, tip, lambda t=tool: self.set_tool(t), checkable=True)
+        self.tool_buttons.setdefault(tool, []).append(b)
         return b
+
+    def tools_group(self, tab):
+        """Hand and Select sit at the left of most Foxit tabs."""
+        self.ribbon.group(tab, "Tools", [Ribbon.stack_of(self.TS("Hand", "hand"), self.TS("Select", "select"),
+                                                        self.TS("Zoom", "zoom"))])
 
     def _build_ribbon(self):
-        B, T, M, G = self.B, self.T, self.M, self._group
-        G("File", "File", [B("Open", self.open_dialog), B("Save", self.save), B("Save As", self.save_as),
-                           B("Print", self.print_doc), B("Close", lambda: self.close_tab(self.docs.currentIndex()))])
-        G("File", "Edit", [B("Undo", self.undo), B("Redo", self.redo)])
-        G("Home", "Tools", [T("✋ Hand", "hand"), T("Select", "select"), T("🔍 Zoom", "zoom")])
-        G("Home", "View", [B("Fit width", lambda: self.cur() and self.cur().fit_width()),
-                           B("Fit page", lambda: self.cur() and self.cur().fit_page()),
-                           B("Zoom +", lambda: self._zoom(1.25)), B("Zoom −", lambda: self._zoom(0.8))])
-        G("Home", "Edit", [B("Undo", self.undo), B("Redo", self.redo)])
+        r, L, S, LM, TL, TS, TI = self.ribbon, self.L, self.S, self.LM, self.TL, self.TS, self.TI
+        G = r.group
+        stack, grid = Ribbon.stack_of, Ribbon.grid_of
 
-        G("Convert", "Create", [B("From file…", self.create_from_file), B("Combine files…", self.combine_files)])
-        G("Convert", "Export", [M("To Office", [("Word (.docx)", lambda: self.export("docx")),
-                                                ("Excel (.xlsx)", lambda: self.export("xlsx")),
-                                                ("PowerPoint (.pptx)", lambda: self.export("pptx")),
-                                                ("Rich text (.rtf)", lambda: self.export("rtf"))]),
-                                M("To other", [("Images (PNG)", lambda: self.export("png")),
-                                               ("Images (JPEG)", lambda: self.export("jpg")),
-                                               ("Images (TIFF)", lambda: self.export("tiff")),
-                                               ("Text (.txt)", lambda: self.export("txt")),
-                                               ("HTML (.html)", lambda: self.export("html"))])])
-        G("Convert", "OCR & standards", [B("OCR", self.ocr), B("To PDF/A", self.to_pdfa)])
+        # File
+        G("File", "File", [L("Open", "open", self.open_dialog), L("Save", "save", self.save),
+                           L("Save As", "save", self.save_as), L("Print", "print", self.print_doc),
+                           L("Close", "close", lambda: self.close_tab(self.docs.currentIndex()))])
+        G("File", "History", [stack(S("Undo", "undo", self.undo), S("Redo", "redo", self.redo))])
 
-        G("Edit", "Content", [T("Edit text", "edit-text"), T("Add text", "add-text"), T("Add image", "image")])
-        G("Edit", "Find", [B("Replace…", self.find_replace)])
-        G("Edit", "Document", [B("Properties…", self.properties)])
+        # Home
+        self.tools_group("Home")
+        G("Home", "View", [L("Fit Width", "fit-width", lambda: self.cur() and self.cur().fit_width()),
+                           L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
+                           stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)),
+                                 S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
+        G("Home", "Create", [L("From File", "create", self.create_from_file), L("Combine", "combine", self.combine_files)])
+        G("Home", "Edit", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text")])
+        G("Home", "Review", [stack(self.TS("Highlight", "highlight"), self.TS("Note", "note"),
+                                   self.TS("Typewriter", "typewriter"))])
+        G("Home", "Protect", [L("Sign", "sign", lambda: self.set_tool("sign-place")),
+                              stack(S("Mark Redaction", "redact", lambda: self.set_tool("redact")),
+                                    S("Apply", "apply", self.apply_redactions))])
 
-        G("Fill & Sign", "Sign", [B("Create signature…", self.create_signature),
-                                  T("Place signature", "sign-place"), T("Add text", "add-text")])
-        G("Fill & Sign", "Saved", [self._saved_sig_menu()])
+        # Convert
+        G("Convert", "Create", [L("From File", "create", self.create_from_file), L("Combine Files", "combine", self.combine_files)])
+        G("Convert", "Export", [LM("To Word", "word", [("Word (.docx)", lambda: self.export("docx")),
+                                                        ("Rich text (.rtf)", lambda: self.export("rtf"))]),
+                                L("To Excel", "excel", lambda: self.export("xlsx")),
+                                L("To PowerPoint", "ppt", lambda: self.export("pptx")),
+                                LM("To Image", "images", [("PNG", lambda: self.export("png")),
+                                                         ("JPEG", lambda: self.export("jpg")),
+                                                         ("TIFF", lambda: self.export("tiff"))]),
+                                stack(S("To Text", "text", lambda: self.export("txt")),
+                                      S("To HTML", "html", lambda: self.export("html")))])
+        G("Convert", "OCR", [L("OCR", "ocr", self.ocr)])
+        G("Convert", "Standards", [L("To PDF/A", "pdfa", self.to_pdfa)])
 
-        G("Organize", "Pages", [B("Rotate ⟳", lambda: self._pages_cmd("Pages.Rotate", angle=90)),
-                                B("Rotate ⟲", lambda: self._pages_cmd("Pages.Rotate", angle=270)),
-                                B("Delete", self.delete_pages), B("Extract…", self.extract_pages),
-                                B("Insert blank", self.insert_blank), B("Insert file…", self.insert_file),
-                                B("Reverse", lambda: self.apply("Reverse pages", lambda d: run("Pages.Reverse", d)))])
-        G("Organize", "Files", [B("Combine…", self.combine_files), B("Split…", self.split)])
-        G("Organize", "Page layout", [B("Crop white", lambda: self._pages_cmd("Pages.Crop", remove_white=True)),
-                                      B("Flatten", lambda: self.apply("Flatten", lambda d: run("Pages.Flatten", d)))])
-        G("Organize", "Marks", [M("Header/Footer", [("Add…", self.header_footer),
-                                                     ("Remove all", lambda: self.apply("Remove header/footer", lambda d: run("Pages.RemoveHeaderFooter", d)))]),
-                                M("Watermark", [("Add…", self.watermark),
-                                                ("Remove all", lambda: self.apply("Remove watermark", lambda d: run("Pages.RemoveWatermark", d)))]),
-                                M("Background", [("Add (cream)", lambda: self.apply("Background", lambda d: run("Pages.Background", d))),
-                                                 ("Remove", lambda: self.apply("Remove background", lambda d: run("Pages.RemoveBackground", d)))]),
-                                B("Bates…", self.bates)])
+        # Edit
+        self.tools_group("Edit")
+        G("Edit", "Content", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text"), TL("Add Image", "image")])
+        G("Edit", "Find", [L("Replace", "replace", self.find_replace)])
+        G("Edit", "Document", [L("Properties", "properties", self.properties)])
 
-        G("Comment", "Tools", [T("✋ Hand", "hand"), T("Select", "select"), T("🔍 Zoom", "zoom")])
-        G("Comment", "Text markup", [T("Highlight", "highlight"), T("Underline", "underline"),
-                                     T("Strikeout", "strikeout"), T("Squiggly", "squiggly"), T("Replace", "replace-text")])
-        G("Comment", "Pin", [T("Note", "note"), T("File", "file")])
-        G("Comment", "Typewriter", [T("Typewriter", "typewriter"), T("Text box", "textbox"), T("Callout", "callout")])
-        G("Comment", "Drawing", [T("Rectangle", "rectangle"), T("Oval", "oval"), T("Line", "line"), T("Arrow", "arrow"),
-                                 T("Polygon", "polygon"), T("Cloud", "cloud"), T("Polyline", "polyline"),
-                                 T("Pencil", "pencil")])
+        # Fill & Sign
+        self.tools_group("Fill & Sign")
+        G("Fill & Sign", "Sign", [L("Create Signature", "sign", self.create_signature),
+                                  TL("Place Signature", "sign-place", "sign"), self._saved_sig_menu()])
+        G("Fill & Sign", "Fill", [TL("Add Text", "add-text")])
+
+        # Organize
+        self.tools_group("Organize")
+        G("Organize", "Pages", [L("Delete", "delete", self.delete_pages), L("Extract", "extract", self.extract_pages),
+                                L("Insert Blank", "insert", self.insert_blank), L("Insert File", "insert-file", self.insert_file),
+                                stack(S("Rotate Right", "rotate-r", lambda: self._pages_cmd("Pages.Rotate", angle=90)),
+                                      S("Rotate Left", "rotate-l", lambda: self._pages_cmd("Pages.Rotate", angle=270)),
+                                      S("Reverse", "reverse", lambda: self.apply("Reverse pages", lambda d: run("Pages.Reverse", d))))])
+        G("Organize", "Files", [L("Combine", "combine", self.combine_files), L("Split", "split", self.split)])
+        G("Organize", "Page Layout", [stack(S("Crop White", "crop", lambda: self._pages_cmd("Pages.Crop", remove_white=True)),
+                                            S("Flatten", "flatten", lambda: self.apply("Flatten", lambda d: run("Pages.Flatten", d))))])
+        G("Organize", "Marks", [LM("Header & Footer", "header", [("Add…", self.header_footer),
+                                    ("Remove all", lambda: self.apply("Remove header/footer", lambda d: run("Pages.RemoveHeaderFooter", d)))]),
+                                LM("Watermark", "watermark", [("Add…", self.watermark),
+                                    ("Remove all", lambda: self.apply("Remove watermark", lambda d: run("Pages.RemoveWatermark", d)))]),
+                                LM("Background", "background", [("Add (cream)", lambda: self.apply("Background", lambda d: run("Pages.Background", d))),
+                                    ("Remove", lambda: self.apply("Remove background", lambda d: run("Pages.RemoveBackground", d)))]),
+                                L("Bates", "bates", self.bates)])
+
+        # Comment — same groups as Foxit: Tools | Text Markup | Pin | Typewriter | Drawing | Stamp | Manage
+        self.tools_group("Comment")
+        G("Comment", "Text Markup", [grid([TI("Highlight", "highlight"), TI("Underline", "underline"),
+                                           TI("Strikeout", "strikeout"), TI("Squiggly", "squiggly"),
+                                           TI("Replace Text", "replace-text"), TI("Area Highlight", "area-highlight", "highlight")], 3)])
+        G("Comment", "Pin", [TL("Note", "note"), TL("File", "file")])
+        G("Comment", "Typewriter", [TL("Typewriter", "typewriter"), stack(self.TS("Callout", "callout"), self.TS("Textbox", "textbox"))])
+        G("Comment", "Drawing", [grid([TI("Rectangle", "rectangle"), TI("Oval", "oval"), TI("Line", "line"),
+                                       TI("Arrow", "arrow"), TI("Polygon", "polygon"), TI("Cloud", "cloud"),
+                                       TI("Polyline", "polyline"), TI("Pencil", "pencil")], 4)])
         stamp = QComboBox()
         stamp.addItems(STAMPS)
+        stamp.setFixedWidth(120)
         stamp.currentTextChanged.connect(lambda t: setattr(self, "stamp_name", t))
-        G("Comment", "Stamp", [T("Stamp", "stamp"), stamp])
-        G("Comment", "Manage", [B("Delete all", self.delete_all_comments)])
+        G("Comment", "Stamp", [TL("Stamp", "stamp"), stack(stamp)])
+        G("Comment", "Manage", [L("Delete All", "delete-all", self.delete_all_comments)])
 
-        G("View", "Zoom", [B("Fit width", lambda: self.cur() and self.cur().fit_width()),
-                           B("Fit page", lambda: self.cur() and self.cur().fit_page()),
-                           B("Zoom +", lambda: self._zoom(1.25)), B("Zoom −", lambda: self._zoom(0.8))])
-        G("View", "Panels", [B("Navigation", lambda: self.nav_dock.setVisible(not self.nav_dock.isVisible()))])
-        G("View", "Compare", [B("Compare…", self.compare)])
+        # View
+        self.tools_group("View")
+        G("View", "Zoom", [L("Fit Width", "fit-width", lambda: self.cur() and self.cur().fit_width()),
+                           L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
+                           stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)), S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
+        G("View", "Panels", [L("Navigation Panels", "navigation", self.toggle_nav, tip="Show or hide the navigation panels (F4)")])
+        G("View", "Compare", [L("Compare", "compare", self.compare)])
 
-        G("Protect", "Redaction", [T("Mark", "redact"), B("Search…", self.search_redact),
-                                   M("Find pattern", [(k, lambda k=k: self.pattern_redact(k)) for k in
-                                                      __import__("pdfdesk.commands.protect", fromlist=["x"]).PATTERNS]),
-                                   B("Apply", self.apply_redactions), T("Whiteout", "whiteout")])
-        G("Protect", "Security", [B("Password…", self.password), B("Remove security", self.remove_security),
-                                  B("Remove hidden info", lambda: self.apply("Remove hidden info", lambda d: run("Protect.RemoveHiddenInfo", d)))])
-        G("Protect", "Sign & certify", [B("Create ID…", self.create_id), T("Sign…", "digital-sign"),
-                                        B("Certify…", lambda: self.digital_sign(None, certify=True)),
-                                        B("Validate", self.validate)])
+        # Protect
+        self.tools_group("Protect")
+        pats = __import__("pdfdesk.commands.protect", fromlist=["x"]).PATTERNS
+        G("Protect", "Redaction", [TL("Mark for Redaction", "redact"),
+                                   L("Apply Redactions", "apply", self.apply_redactions),
+                                   stack(S("Search & Redact", "search-redact", self.search_redact),
+                                         Ribbon.small("Find Pattern", "pattern", menu=[(k, lambda k=k: self.pattern_redact(k)) for k in pats]),
+                                         self.TS("Whiteout", "whiteout"))])
+        G("Protect", "Security", [L("Password", "password", self.password), L("Remove Security", "unlock", self.remove_security),
+                                  L("Remove Hidden Info", "hidden", lambda: self.apply("Remove hidden info", lambda d: run("Protect.RemoveHiddenInfo", d)))])
+        G("Protect", "Sign & Certify", [TL("Sign", "digital-sign"), L("Certify", "certify", lambda: self.digital_sign(None, certify=True)),
+                                        stack(S("Create ID", "id", self.create_id), S("Validate", "validate", self.validate))])
 
         for tab, what in NOT_YET.items():
-            lab = QLabel(f"{what} are planned for a later phase.")
-            lab.setStyleSheet("color:#888;padding:12px")
-            self.groups[tab].addWidget(lab)
-        G("Help", "Help", [B("About", lambda: QMessageBox.about(
+            r.note(tab, f"{what} are planned for a later phase.")
+        G("Help", "Help", [L("About", "help", lambda: QMessageBox.about(
             self, "pdfdesk", "pdfdesk — a PDF editor for Linux.\nBuilt on PyMuPDF, pikepdf, pyHanko, OCRmyPDF, Qt."))])
 
-    def _saved_sig_menu(self) -> QToolButton:
-        b = QToolButton(text="Saved ▾")
-        b.setMinimumSize(58, 46)
-        b.setPopupMode(QToolButton.InstantPopup)
+    def _saved_sig_menu(self):
+        from PySide6.QtWidgets import QMenu
+        b = Ribbon.large("Saved Signatures", "sign-place")
         m = QMenu(b)
         m.aboutToShow.connect(lambda: self._fill_sig_menu(m))
         b.setMenu(m)
+        b.setPopupMode(QToolButton.InstantPopup)
         return b
 
-    def _fill_sig_menu(self, m: QMenu):
+    def _fill_sig_menu(self, m):
         m.clear()
         sigs = dialogs.saved_signatures()
         for s in sigs:
@@ -335,10 +505,13 @@ class Main(QMainWindow):
     # ---- tools ----------------------------------------------------------------------------------------
     def set_tool(self, tool: str):
         self.tool = tool
-        if tool in self.tool_buttons:
-            self.tool_buttons[tool].setChecked(True)
+        for name, buttons in self.tool_buttons.items():
+            for b in buttons:
+                b.setChecked(name == tool)
         for i in range(self.docs.count()):
-            self.docs.widget(i).set_tool(tool)
+            w = self.docs.widget(i)
+            if isinstance(w, DocView):
+                w.set_tool(tool)
         self.msg(TOOL_HINTS.get(tool, ""), 8000)
 
     def on_tool(self, a: dict):
@@ -509,6 +682,8 @@ class Main(QMainWindow):
             QMessageBox.information(self, "Restricted", "This file was opened with its user password and does not "
                                     "allow changes. You can read and print it but not edit it.")
         self._add(v, os.path.basename(path))
+        add_recent(path)
+        self.start.refresh()
         return v
 
     def _add(self, v: DocView, title: str):
@@ -516,7 +691,7 @@ class Main(QMainWindow):
         if not hasattr(v, "security"):
             v.security, v.readonly = None, False
         self.docs.setCurrentIndex(self.docs.addTab(v, title))
-        v.fit_width()
+        QTimer.singleShot(0, v.fit_width)      # after the splitter and panels have their final size
         self._tab_changed()
 
     def new_doc(self, doc: pymupdf.Document, name: str):
@@ -530,7 +705,7 @@ class Main(QMainWindow):
 
     def close_tab(self, i):
         v = self.docs.widget(i)
-        if v is None:
+        if not isinstance(v, DocView):
             return
         if v.modified:
             r = QMessageBox.question(self, "Close", f"Save changes to {os.path.basename(v.path or 'untitled')}?",
@@ -546,8 +721,8 @@ class Main(QMainWindow):
         return True
 
     def closeEvent(self, e):
-        while self.docs.count():
-            if self.close_tab(0) is False:
+        for i in range(self.docs.count() - 1, 0, -1):
+            if self.close_tab(i) is False:
                 e.ignore()
                 return
         e.accept()
@@ -592,6 +767,8 @@ class Main(QMainWindow):
             return False
         v.path, v.modified = path, False
         v.undo_stack.clear() if not incremental else None
+        add_recent(path)
+        self.start.refresh()
         v.relayout()
         self._title()
         self.refresh_panels()
@@ -949,14 +1126,26 @@ class Main(QMainWindow):
         if not v:
             return
         langs, ok = QInputDialog.getText(self, "OCR", "Languages (Tesseract codes, e.g. eng+deu+ara):", text="eng")
+        if not ok or not langs.strip():
+            return
+        kinds = ["Editable text — replace the scan with real text you can edit",
+                 "Searchable text — keep the image, add an invisible text layer"]
+        kind, ok = QInputDialog.getItem(self, "OCR", "Output:", kinds, 0, False)
         if not ok:
             return
         self.msg("Running OCR…")
         QApplication.processEvents()
+        language_list = [x for x in langs.replace(",", "+").split("+") if x.strip()]
+        if kind == kinds[0]:
+            res = self.apply("OCR (editable text)", lambda d: run("Ocr.Editable", d, languages=language_list))
+            if isinstance(res, dict):
+                self.msg(f"OCR done: {res['pages']} page(s), {res['lines']} lines, "
+                         f"{len(res['suspects'])} uncertain word(s) to check")
+            return
         try:
             src = self._current_file()
             out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
-            run("Ocr.Run", src, out, languages=langs.split("+"))
+            run("Ocr.Run", src, out, languages=language_list)
             with open(out, "rb") as f:
                 new = pymupdf.open("pdf", f.read())
         except Exception as e:  # noqa: BLE001
