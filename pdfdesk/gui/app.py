@@ -1,0 +1,990 @@
+"""Main window: ribbon tabs as in Foxit 10, document tabs, side panels, mouse tools, undo/redo."""
+from __future__ import annotations
+
+import getpass
+import glob
+import os
+import subprocess
+import sys
+import tempfile
+from datetime import date
+
+import pymupdf
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDockWidget, QFileDialog, QFrame,
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QTabWidget, QToolButton, QVBoxLayout, QWidget)
+
+from ..commands import comment as comment_cmds
+from ..commands import run
+from ..core import security as sec
+from . import dialogs
+from .panels import Bookmarks, Comments, Thumbnails
+from .viewer import DocView
+
+RIBBON = ["File", "Home", "Convert", "Edit", "Fill && Sign", "Organize", "Comment", "View", "Form",
+          "Protect", "Share", "Connect", "Accessibility", "Help"]
+NOT_YET = {"Form": "Form fields and filling", "Share": "Email, shared review and cloud drives",
+           "Connect": "Connected services", "Accessibility": "Accessibility check and tagging"}
+
+TOOL_HINTS = {
+    "hand": "Hand: drag to scroll, click a comment to select it (Delete removes it, double-click edits)",
+    "select": "Select: drag over text, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
+    "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
+    "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
+    "replace-text": "Replace text: drag across the text to replace",
+    "note": "Note: click where the note goes", "file": "File attachment: click where it goes",
+    "typewriter": "Typewriter: click where the text goes", "textbox": "Text box: drag a box",
+    "callout": "Callout: drag from the point to the box position",
+    "rectangle": "Rectangle: drag", "oval": "Oval: drag", "line": "Line: drag", "arrow": "Arrow: drag",
+    "polygon": "Polygon: click points, double-click or Enter to finish",
+    "cloud": "Cloud: click points, double-click or Enter to finish",
+    "polyline": "Polyline: click points, double-click or Enter to finish",
+    "pencil": "Pencil: draw, press Enter to finish", "stamp": "Stamp: drag a box",
+    "edit-text": "Edit text: click a line of text, change it, press Enter",
+    "add-text": "Add text: click where the text goes", "image": "Add image: drag a box",
+    "redact": "Mark for redaction: drag over text or images", "whiteout": "Whiteout: drag over what to erase",
+    "sign-place": "Place signature: click or drag a box", "digital-sign": "Digital signature: drag a box",
+}
+STAMPS = ["Approved", "NotApproved", "Draft", "Final", "Confidential", "ForComment", "ForPublicRelease",
+          "NotForPublicRelease", "TopSecret", "Expired", "Sold", "AsIs", "Experimental", "Departmental"]
+
+
+def _ranges(pages0: list[int]) -> str:
+    """0-based page list -> '1-3,7' spec."""
+    out, i = [], 0
+    pages = sorted(set(pages0))
+    while i < len(pages):
+        j = i
+        while j + 1 < len(pages) and pages[j + 1] == pages[j] + 1:
+            j += 1
+        out.append(f"{pages[i] + 1}" if i == j else f"{pages[i] + 1}-{pages[j] + 1}")
+        i = j + 1
+    return ",".join(out)
+
+
+class Main(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("pdfdesk")
+        self.resize(1360, 900)
+        self.author = getpass.getuser()
+        self.tool = "hand"
+        self.stamp_name = "Approved"
+        self.sig_spec: dict | None = None
+        self.docs = QTabWidget(tabsClosable=True, movable=True, documentMode=True)
+        self.docs.tabCloseRequested.connect(self.close_tab)
+        self.docs.currentChanged.connect(self._tab_changed)
+        self.ribbon = QTabWidget()
+        self.ribbon.setFixedHeight(96)
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        self.tool_buttons: dict[str, QToolButton] = {}
+        self.groups: dict[str, QHBoxLayout] = {}
+        for name in RIBBON:
+            w = QWidget()
+            lay = QHBoxLayout(w)
+            lay.setContentsMargins(6, 2, 6, 2)
+            lay.setAlignment(Qt.AlignLeft)
+            self.ribbon.addTab(w, name)
+            self.groups[name.replace("&&", "&")] = lay
+        central = QWidget()
+        v = QVBoxLayout(central)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.ribbon)
+        v.addWidget(self.docs)
+        self.setCentralWidget(central)
+
+        self.thumbs, self.bookmarks, self.comments = Thumbnails(), Bookmarks(), Comments()
+        self.side = QTabWidget()
+        self.side.setTabPosition(QTabWidget.West)
+        for w, n in ((self.thumbs, "Pages"), (self.bookmarks, "Bookmarks"), (self.comments, "Comments")):
+            self.side.addTab(w, n)
+        dock = QDockWidget("Navigation", self)
+        dock.setWidget(self.side)
+        dock.setFeatures(QDockWidget.DockWidgetClosable | QDockWidget.DockWidgetMovable)
+        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        self.nav_dock = dock
+        self.thumbs.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
+        self.bookmarks.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
+        self.comments.activated.connect(self._focus_comment)
+        self.thumbs.reordered.connect(self._reorder)
+        self.thumbs.pageCommand.connect(self._page_command)
+
+        self.find_box = QLineEdit(placeholderText="Find")
+        self.find_box.setMaximumWidth(220)
+        self.find_box.returnPressed.connect(self.do_find)
+        self.page_label = QLabel("")
+        self.statusBar().addPermanentWidget(self.find_box)
+        self.statusBar().addPermanentWidget(self.page_label)
+        self._build_ribbon()
+        self._shortcuts()
+        self.set_tool("hand")
+
+    # ---- plumbing ------------------------------------------------------------------------------------
+    def cur(self) -> DocView | None:
+        return self.docs.currentWidget()
+
+    def _shortcuts(self):
+        for key, fn in (("Ctrl+O", self.open_dialog), ("Ctrl+S", self.save), ("Ctrl+Shift+S", self.save_as),
+                        ("Ctrl+F", self.find_box.setFocus), ("Ctrl+W", lambda: self.close_tab(self.docs.currentIndex())),
+                        ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
+                        ("Ctrl+P", self.print_doc), ("Ctrl+0", lambda: self.cur() and self.cur().fit_page()),
+                        ("Ctrl+=", lambda: self._zoom(1.25)), ("Ctrl+-", lambda: self._zoom(0.8))):
+            a = QAction(self)
+            a.setShortcut(QKeySequence(key))
+            a.triggered.connect(fn)
+            self.addAction(a)
+
+    def _zoom(self, k):
+        if self.cur():
+            self.cur().set_zoom(self.cur().zoom * k)
+
+    def _tab_changed(self, _=None):
+        v = self.cur()
+        if v:
+            v.set_tool(self.tool)
+        self.refresh_panels()
+        self._status()
+        self._title()
+
+    def _title(self):
+        v = self.cur()
+        self.setWindowTitle("pdfdesk" + (f" — {os.path.basename(v.path or 'untitled')}{' *' if v.modified else ''}"
+                                         if v else ""))
+        if v:
+            i = self.docs.currentIndex()
+            self.docs.setTabText(i, os.path.basename(v.path or "untitled") + (" *" if v.modified else ""))
+
+    def refresh_panels(self):
+        v = self.cur()
+        d = v.doc if v else None
+        self.thumbs.set_document(d)
+        self.bookmarks.set_document(d)
+        self.comments.set_document(d)
+
+    def _status(self):
+        v = self.cur()
+        self.page_label.setText(f"  Page {v.current_page() + 1} / {v.doc.page_count}   {int(v.zoom * 100)}%  "
+                                if v else "")
+
+    def msg(self, text: str, ms: int = 5000):
+        self.statusBar().showMessage(text, ms)
+
+    def error(self, title: str, e: Exception | str):
+        QMessageBox.warning(self, title, str(e))
+
+    # ---- ribbon construction ----------------------------------------------------------------------
+    def _group(self, tab: str, title: str, items: list):
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(4, 0, 4, 0)
+        col.setSpacing(0)
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        for it in items:
+            row.addWidget(it)
+        col.addLayout(row)
+        lab = QLabel(title)
+        lab.setAlignment(Qt.AlignCenter)
+        lab.setStyleSheet("color:#777;font-size:10px")
+        col.addWidget(lab)
+        lay = self.groups[tab]
+        lay.addWidget(box)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet("color:#ccc")
+        lay.addWidget(sep)
+
+    def B(self, label, fn, tip: str | None = None) -> QToolButton:
+        b = QToolButton(text=label)
+        b.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        b.setMinimumSize(58, 46)
+        b.clicked.connect(lambda: fn())
+        if tip:
+            b.setToolTip(tip)
+        return b
+
+    def T(self, label, tool: str) -> QToolButton:
+        b = QToolButton(text=label)
+        b.setCheckable(True)
+        b.setMinimumSize(58, 46)
+        b.setToolTip(TOOL_HINTS.get(tool, ""))
+        self.tool_group.addButton(b)
+        self.tool_buttons[tool] = b
+        b.clicked.connect(lambda: self.set_tool(tool))
+        return b
+
+    def M(self, label, entries: list[tuple[str, callable]]) -> QToolButton:
+        b = QToolButton(text=label + " ▾")
+        b.setMinimumSize(58, 46)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        for text, fn in entries:
+            m.addAction(text, fn)
+        b.setMenu(m)
+        return b
+
+    def _build_ribbon(self):
+        B, T, M, G = self.B, self.T, self.M, self._group
+        G("File", "File", [B("Open", self.open_dialog), B("Save", self.save), B("Save As", self.save_as),
+                           B("Print", self.print_doc), B("Close", lambda: self.close_tab(self.docs.currentIndex()))])
+        G("File", "Edit", [B("Undo", self.undo), B("Redo", self.redo)])
+        G("Home", "Tools", [T("✋ Hand", "hand"), T("Select", "select"), T("🔍 Zoom", "zoom")])
+        G("Home", "View", [B("Fit width", lambda: self.cur() and self.cur().fit_width()),
+                           B("Fit page", lambda: self.cur() and self.cur().fit_page()),
+                           B("Zoom +", lambda: self._zoom(1.25)), B("Zoom −", lambda: self._zoom(0.8))])
+        G("Home", "Edit", [B("Undo", self.undo), B("Redo", self.redo)])
+
+        G("Convert", "Create", [B("From file…", self.create_from_file), B("Combine files…", self.combine_files)])
+        G("Convert", "Export", [M("To Office", [("Word (.docx)", lambda: self.export("docx")),
+                                                ("Excel (.xlsx)", lambda: self.export("xlsx")),
+                                                ("PowerPoint (.pptx)", lambda: self.export("pptx")),
+                                                ("Rich text (.rtf)", lambda: self.export("rtf"))]),
+                                M("To other", [("Images (PNG)", lambda: self.export("png")),
+                                               ("Images (JPEG)", lambda: self.export("jpg")),
+                                               ("Images (TIFF)", lambda: self.export("tiff")),
+                                               ("Text (.txt)", lambda: self.export("txt")),
+                                               ("HTML (.html)", lambda: self.export("html"))])])
+        G("Convert", "OCR & standards", [B("OCR", self.ocr), B("To PDF/A", self.to_pdfa)])
+
+        G("Edit", "Content", [T("Edit text", "edit-text"), T("Add text", "add-text"), T("Add image", "image")])
+        G("Edit", "Find", [B("Replace…", self.find_replace)])
+        G("Edit", "Document", [B("Properties…", self.properties)])
+
+        G("Fill & Sign", "Sign", [B("Create signature…", self.create_signature),
+                                  T("Place signature", "sign-place"), T("Add text", "add-text")])
+        G("Fill & Sign", "Saved", [self._saved_sig_menu()])
+
+        G("Organize", "Pages", [B("Rotate ⟳", lambda: self._pages_cmd("Pages.Rotate", angle=90)),
+                                B("Rotate ⟲", lambda: self._pages_cmd("Pages.Rotate", angle=270)),
+                                B("Delete", self.delete_pages), B("Extract…", self.extract_pages),
+                                B("Insert blank", self.insert_blank), B("Insert file…", self.insert_file),
+                                B("Reverse", lambda: self.apply("Reverse pages", lambda d: run("Pages.Reverse", d)))])
+        G("Organize", "Files", [B("Combine…", self.combine_files), B("Split…", self.split)])
+        G("Organize", "Page layout", [B("Crop white", lambda: self._pages_cmd("Pages.Crop", remove_white=True)),
+                                      B("Flatten", lambda: self.apply("Flatten", lambda d: run("Pages.Flatten", d)))])
+        G("Organize", "Marks", [M("Header/Footer", [("Add…", self.header_footer),
+                                                     ("Remove all", lambda: self.apply("Remove header/footer", lambda d: run("Pages.RemoveHeaderFooter", d)))]),
+                                M("Watermark", [("Add…", self.watermark),
+                                                ("Remove all", lambda: self.apply("Remove watermark", lambda d: run("Pages.RemoveWatermark", d)))]),
+                                M("Background", [("Add (cream)", lambda: self.apply("Background", lambda d: run("Pages.Background", d))),
+                                                 ("Remove", lambda: self.apply("Remove background", lambda d: run("Pages.RemoveBackground", d)))]),
+                                B("Bates…", self.bates)])
+
+        G("Comment", "Tools", [T("✋ Hand", "hand"), T("Select", "select"), T("🔍 Zoom", "zoom")])
+        G("Comment", "Text markup", [T("Highlight", "highlight"), T("Underline", "underline"),
+                                     T("Strikeout", "strikeout"), T("Squiggly", "squiggly"), T("Replace", "replace-text")])
+        G("Comment", "Pin", [T("Note", "note"), T("File", "file")])
+        G("Comment", "Typewriter", [T("Typewriter", "typewriter"), T("Text box", "textbox"), T("Callout", "callout")])
+        G("Comment", "Drawing", [T("Rectangle", "rectangle"), T("Oval", "oval"), T("Line", "line"), T("Arrow", "arrow"),
+                                 T("Polygon", "polygon"), T("Cloud", "cloud"), T("Polyline", "polyline"),
+                                 T("Pencil", "pencil")])
+        stamp = QComboBox()
+        stamp.addItems(STAMPS)
+        stamp.currentTextChanged.connect(lambda t: setattr(self, "stamp_name", t))
+        G("Comment", "Stamp", [T("Stamp", "stamp"), stamp])
+        G("Comment", "Manage", [B("Delete all", self.delete_all_comments)])
+
+        G("View", "Zoom", [B("Fit width", lambda: self.cur() and self.cur().fit_width()),
+                           B("Fit page", lambda: self.cur() and self.cur().fit_page()),
+                           B("Zoom +", lambda: self._zoom(1.25)), B("Zoom −", lambda: self._zoom(0.8))])
+        G("View", "Panels", [B("Navigation", lambda: self.nav_dock.setVisible(not self.nav_dock.isVisible()))])
+        G("View", "Compare", [B("Compare…", self.compare)])
+
+        G("Protect", "Redaction", [T("Mark", "redact"), B("Search…", self.search_redact),
+                                   M("Find pattern", [(k, lambda k=k: self.pattern_redact(k)) for k in
+                                                      __import__("pdfdesk.commands.protect", fromlist=["x"]).PATTERNS]),
+                                   B("Apply", self.apply_redactions), T("Whiteout", "whiteout")])
+        G("Protect", "Security", [B("Password…", self.password), B("Remove security", self.remove_security),
+                                  B("Remove hidden info", lambda: self.apply("Remove hidden info", lambda d: run("Protect.RemoveHiddenInfo", d)))])
+        G("Protect", "Sign & certify", [B("Create ID…", self.create_id), T("Sign…", "digital-sign"),
+                                        B("Certify…", lambda: self.digital_sign(None, certify=True)),
+                                        B("Validate", self.validate)])
+
+        for tab, what in NOT_YET.items():
+            lab = QLabel(f"{what} are planned for a later phase.")
+            lab.setStyleSheet("color:#888;padding:12px")
+            self.groups[tab].addWidget(lab)
+        G("Help", "Help", [B("About", lambda: QMessageBox.about(
+            self, "pdfdesk", "pdfdesk — a PDF editor for Linux.\nBuilt on PyMuPDF, pikepdf, pyHanko, OCRmyPDF, Qt."))])
+
+    def _saved_sig_menu(self) -> QToolButton:
+        b = QToolButton(text="Saved ▾")
+        b.setMinimumSize(58, 46)
+        b.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b)
+        m.aboutToShow.connect(lambda: self._fill_sig_menu(m))
+        b.setMenu(m)
+        return b
+
+    def _fill_sig_menu(self, m: QMenu):
+        m.clear()
+        sigs = dialogs.saved_signatures()
+        for s in sigs:
+            m.addAction(dialogs.describe_signature(s), lambda s=s: self._use_signature(s))
+        if not sigs:
+            m.addAction("(none saved yet)").setEnabled(False)
+
+    def _use_signature(self, s: dict):
+        self.sig_spec = s
+        self.set_tool("sign-place")
+        self.msg("Click or drag on the page to place: " + dialogs.describe_signature(s))
+
+    # ---- tools ----------------------------------------------------------------------------------------
+    def set_tool(self, tool: str):
+        self.tool = tool
+        if tool in self.tool_buttons:
+            self.tool_buttons[tool].setChecked(True)
+        for i in range(self.docs.count()):
+            self.docs.widget(i).set_tool(tool)
+        self.msg(TOOL_HINTS.get(tool, ""), 8000)
+
+    def on_tool(self, a: dict):
+        v = self.cur()
+        if not v:
+            return
+        t, page = a["tool"], a.get("page")
+        if t in ("move-annot", "delete-annot", "edit-annot", "edit-text-commit", "sign-place") or t not in (
+                "select", "hand", "zoom"):
+            if getattr(v, "readonly", False):
+                return self.error("Read only", "This document was opened with its user password and does not "
+                                  "allow changes. Open it with the permissions password to edit.")
+        au = self.author
+        try:
+            if t == "delete-annot":
+                return self.apply("Delete comment", lambda d: run("Comment.Delete", d, page, a["xref"]))
+            if t == "move-annot":
+                return self.apply("Move comment", lambda d: run("Comment.Move", d, page, a["xref"], a["dx"], a["dy"]))
+            if t == "edit-annot":
+                old = next((c["content"] for c in run("Comment.List", v.doc) if c["xref"] == a["xref"]), "")
+                r = dialogs.TextDialog.ask(self, "Edit comment", "Comment text:", old)
+                return r is not None and self.apply("Edit comment", lambda d: run("Comment.SetText", d, page, a["xref"], r))
+            if t in ("highlight", "underline", "strikeout", "squiggly"):
+                name = {"highlight": "Highlight", "underline": "Underline", "strikeout": "Strikeout",
+                        "squiggly": "Squiggly"}[t]
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au))
+            if t == "replace-text":
+                r = dialogs.TextDialog.ask(self, "Replace text", "Replacement text:")
+                return r and self.apply("Replace text", lambda d: run("Comment.ReplaceText", d, page, a["start"], a["stop"], r, author=au))
+            if t == "note":
+                r = dialogs.TextDialog.ask(self, "Note", "Note text:")
+                return r and self.apply("Note", lambda d: run("Comment.Note", d, page, a["point"], r, author=au))
+            if t == "file":
+                p = QFileDialog.getOpenFileName(self, "Attach file")[0]
+                return p and self.apply("Attach file", lambda d: run("Comment.File", d, page, a["point"], p, author=au))
+            if t == "typewriter":
+                r = dialogs.TextDialog.ask(self, "Typewriter", "Text:", size=12)
+                return r and self.apply("Typewriter", lambda d: run("Comment.Typewriter", d, page, a["point"], r[0], fontsize=r[1], author=au))
+            if t == "add-text":
+                r = dialogs.TextDialog.ask(self, "Add text", "Text:", size=12)
+                return r and self.apply("Add text", lambda d: run("Text.Add", d, page, a["point"], r[0], fontsize=r[1]))
+            if t == "textbox" and a["rect"]:
+                r = dialogs.TextDialog.ask(self, "Text box", "Text:")
+                return r and self.apply("Text box", lambda d: run("Comment.Textbox", d, page, a["rect"], r, author=au))
+            if t == "callout":
+                r = dialogs.TextDialog.ask(self, "Callout", "Text:")
+                box = pymupdf.Rect(a["stop"].x, a["stop"].y, a["stop"].x + 140, a["stop"].y + 50)
+                return r and self.apply("Callout", lambda d: run("Comment.Callout", d, page, a["start"], box, r, author=au))
+            if t in ("rectangle", "oval", "area-highlight") and a["rect"]:
+                name = {"rectangle": "Rectangle", "oval": "Oval", "area-highlight": "AreaHighlight"}[t]
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["rect"], author=au))
+            if t in ("line", "arrow"):
+                name = "Line" if t == "line" else "Arrow"
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au))
+            if t in ("polygon", "cloud", "polyline"):
+                name = {"polygon": "Polygon", "cloud": "Cloud", "polyline": "Polyline"}[t]
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["points"], author=au))
+            if t == "pencil":
+                return self.apply("Pencil", lambda d: run("Comment.Pencil", d, page, a["strokes"], author=au))
+            if t == "stamp" and a["rect"]:
+                return self.apply("Stamp", lambda d: run("Comment.Stamp", d, page, a["rect"], self.stamp_name, author=au))
+            if t == "redact" and a["rect"]:
+                return self.apply("Mark for redaction", lambda d: run("Redact.MarkRects", d, page, [a["rect"]]))
+            if t == "whiteout" and a["rect"]:
+                return self.apply("Whiteout", lambda d: run("Redact.Whiteout", d, page, [a["rect"]]))
+            if t == "edit-text-commit":
+                return self.apply("Edit text", lambda d: run("Text.EditLine", d, page, a["point"], a["text"]))
+            if t == "image":
+                if not a["rect"]:
+                    return
+                p = QFileDialog.getOpenFileName(self, "Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif)")[0]
+                return p and self.apply("Add image", lambda d: run("Sign.Image", d, page, a["rect"], path=p))
+            if t == "sign-place":
+                return self._place_signature(a)
+            if t == "digital-sign" and a["rect"]:
+                return self.digital_sign(a)
+        except Exception as e:  # noqa: BLE001
+            self.error("Error", e)
+
+    def _place_signature(self, a):
+        if self.sig_spec is None:
+            self.sig_spec = dialogs.SignatureDialog.ask(self, self.author)
+            if self.sig_spec is None:
+                return
+        s, page = self.sig_spec, a["page"]
+        rect = a["rect"] or pymupdf.Rect(a["point"].x - 80, a["point"].y - 25, a["point"].x + 80, a["point"].y + 25)
+
+        def go(d):
+            if s["kind"] == "typed":
+                run("Sign.Typed", d, page, rect, s["name"])
+            elif s["kind"] == "image":
+                run("Sign.Image", d, page, rect, path=s["path"])
+            else:
+                from ..commands import sign
+                run("Sign.Ink", d, page, sign.fit_strokes(s["strokes"], s["size"], rect))
+        self.apply("Signature", go)
+
+    # ---- applying edits ----------------------------------------------------------------------------
+    def apply(self, label: str, fn):
+        """Run fn(doc) as one undoable step. A failure restores the document and shows the error."""
+        v = self.cur()
+        if not v:
+            return
+        if getattr(v, "readonly", False):
+            return self.error("Read only", "This document does not allow changes.")
+        v.checkpoint(label)
+        try:
+            res = fn(v.doc)
+        except Exception as e:  # noqa: BLE001
+            v.rollback()
+            v.modified = bool(v.undo_stack) or v.modified
+            self.error(label, e)
+            return None
+        if isinstance(res, pymupdf.Document) and res is not v.doc:
+            v.replace_doc(res)
+        else:
+            v.after_edit()
+        self._after(v)
+        self.msg(label)
+        return res
+
+    def _after(self, v):
+        self.refresh_panels()
+        self._status()
+        self._title()
+
+    def undo(self):
+        v = self.cur()
+        if v and (l := v.undo()):
+            self._after(v)
+            self.msg(f"Undid: {l}")
+
+    def redo(self):
+        v = self.cur()
+        if v and (l := v.redo()):
+            self._after(v)
+            self.msg(f"Redid: {l}")
+
+    # ---- open / save / close -----------------------------------------------------------------------------
+    def _wire(self, v: DocView):
+        v.toolAction.connect(self.on_tool)
+        v.pageChanged.connect(lambda n: self._status())
+        v.changed.connect(self._title)
+
+    def open_path(self, path: str) -> DocView | None:
+        try:
+            doc = pymupdf.open(path)
+        except Exception as e:  # noqa: BLE001
+            self.error("Open", e)
+            return None
+        pw, auth = None, 0
+        if doc.needs_pass:
+            for _ in range(3):
+                pw, ok = QInputDialog.getText(self, "Password", f"Password for {os.path.basename(path)}:",
+                                              QLineEdit.Password)
+                if not ok:
+                    return None
+                auth = doc.authenticate(pw)
+                if auth:
+                    break
+                QMessageBox.warning(self, "Password", "That password is not correct.")
+            else:
+                return None
+        v = DocView(doc, path, pw)
+        v.security = sec.from_open(doc, pw, auth)
+        v.readonly = sec.restricted(doc, auth)
+        if v.readonly:
+            QMessageBox.information(self, "Restricted", "This file was opened with its user password and does not "
+                                    "allow changes. You can read and print it but not edit it.")
+        self._add(v, os.path.basename(path))
+        return v
+
+    def _add(self, v: DocView, title: str):
+        self._wire(v)
+        if not hasattr(v, "security"):
+            v.security, v.readonly = None, False
+        self.docs.setCurrentIndex(self.docs.addTab(v, title))
+        v.fit_width()
+        self._tab_changed()
+
+    def new_doc(self, doc: pymupdf.Document, name: str):
+        v = DocView(doc, None)
+        v.security, v.readonly, v.modified = None, False, True
+        self._add(v, name)
+
+    def open_dialog(self):
+        for p in QFileDialog.getOpenFileNames(self, "Open", "", "PDF (*.pdf);;All files (*)")[0]:
+            self.open_path(p)
+
+    def close_tab(self, i):
+        v = self.docs.widget(i)
+        if v is None:
+            return
+        if v.modified:
+            r = QMessageBox.question(self, "Close", f"Save changes to {os.path.basename(v.path or 'untitled')}?",
+                                     QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+            if r == QMessageBox.Cancel:
+                return False
+            if r == QMessageBox.Save:
+                self.docs.setCurrentIndex(i)
+                if not self.save():
+                    return False
+        self.docs.removeTab(i)
+        v.deleteLater()
+        return True
+
+    def closeEvent(self, e):
+        while self.docs.count():
+            if self.close_tab(0) is False:
+                e.ignore()
+                return
+        e.accept()
+
+    def save(self) -> bool:
+        v = self.cur()
+        if not v:
+            return False
+        if not v.path:
+            return self.save_as()
+        return self._save_to(v, v.path, incremental=True)
+
+    def save_as(self) -> bool:
+        v = self.cur()
+        if not v:
+            return False
+        p = QFileDialog.getSaveFileName(self, "Save As", v.path or "untitled.pdf", "PDF (*.pdf)")[0]
+        return bool(p) and self._save_to(v, p, incremental=False)
+
+    def _save_to(self, v: DocView, path: str, incremental: bool) -> bool:
+        s = v.security
+        try:
+            if s is not None and not s.complete:
+                if v.readonly:
+                    return self.error("Save", "This document is read only.") or False
+                if s.owner_pw is not None and s.user_pw is None:
+                    pw, ok = QInputDialog.getText(self, "Open password", "Enter the document's open password to "
+                                                  "keep it protected (leave empty for none):", QLineEdit.Password)
+                    if not ok:
+                        return False
+                    s.user_pw = pw
+                elif s.user_pw is not None and s.owner_pw is None:
+                    pw, ok = QInputDialog.getText(self, "Permissions password", "Enter the permissions password to "
+                                                  "keep it protected:", QLineEdit.Password)
+                    if not ok or not pw:
+                        return False
+                    s.owner_pw = pw
+            same = v.doc.name == path
+            v.doc = sec.save(v.doc, path, s, incremental and same)
+        except Exception as e:  # noqa: BLE001
+            self.error("Save", e)
+            return False
+        v.path, v.modified = path, False
+        v.undo_stack.clear() if not incremental else None
+        v.relayout()
+        self._title()
+        self.refresh_panels()
+        self.msg(f"Saved {path}")
+        return True
+
+    def print_doc(self):
+        v = self.cur()
+        if not v:
+            return
+        out = subprocess.run(["lpstat", "-e"], capture_output=True, text=True).stdout.split()
+        if not out:
+            return self.error("Print", "No printers are configured (CUPS).")
+        name, ok = QInputDialog.getItem(self, "Print", "Printer:", out, 0, False)
+        if not ok:
+            return
+        n, ok = QInputDialog.getInt(self, "Print", "Copies:", 1, 1, 99)
+        if not ok:
+            return
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(v.doc.tobytes())
+        r = subprocess.run(["lp", "-d", name, "-n", str(n), f.name], capture_output=True, text=True)
+        self.msg(r.stdout.strip() or r.stderr.strip())
+
+    # ---- find / panels --------------------------------------------------------------------------------
+    def do_find(self):
+        v = self.cur()
+        if v:
+            self.msg(f"{v.find(self.find_box.text())} matches")
+
+    def _focus_comment(self, page0: int, xref: int):
+        v = self.cur()
+        if v:
+            v.goto(page0)
+            v.selected = (page0, xref)
+            v.viewport().update()
+
+    # ---- pages ---------------------------------------------------------------------------------------------
+    def _sel_spec(self) -> str:
+        v = self.cur()
+        sel = self.thumbs.selected_pages()
+        return _ranges(sel) if sel else str(v.current_page() + 1)
+
+    def _pages_cmd(self, name, **kw):
+        self.apply(name.split(".")[-1], lambda d: run(name, d, pages=self._sel_spec(), **kw))
+
+    def delete_pages(self):
+        v = self.cur()
+        spec = self._sel_spec()
+        if v and QMessageBox.question(self, "Delete pages", f"Delete page(s) {spec}?") == QMessageBox.Yes:
+            self.apply("Delete pages", lambda d: run("Pages.Delete", d, pages=spec))
+
+    def extract_pages(self):
+        v = self.cur()
+        if not v:
+            return
+        spec, ok = QInputDialog.getText(self, "Extract pages", "Pages (e.g. 1-3,7):", text=self._sel_spec())
+        if not ok or not spec:
+            return
+        try:
+            out = run("Pages.Extract", v.doc, pages=spec)
+        except Exception as e:  # noqa: BLE001
+            return self.error("Extract", e)
+        self.new_doc(out, f"extract-{spec}.pdf")
+
+    def insert_blank(self):
+        v = self.cur()
+        if v:
+            sel = self.thumbs.selected_pages()
+            after = (sel[-1] + 1) if sel else v.current_page() + 1
+            r = v.doc[min(after, v.doc.page_count) - 1].rect
+            self.apply("Insert blank page", lambda d: run("Pages.InsertBlank", d, after, r.width, r.height))
+
+    def insert_file(self, after: int | None = None):
+        v = self.cur()
+        p = QFileDialog.getOpenFileName(self, "Insert pages from", "", "PDF (*.pdf)")[0]
+        if v and p:
+            sel = self.thumbs.selected_pages()
+            at = after if after is not None else ((sel[-1] + 1) if sel else v.current_page() + 1)
+            self.apply("Insert pages", lambda d: run("Pages.InsertFile", d, p, at))
+
+    def _reorder(self, order: list[int]):
+        self.apply("Reorder pages", lambda d: d.select(order))
+
+    def _page_command(self, name: str, pages: list[int]):
+        v = self.cur()
+        if not v or not pages:
+            return
+        spec = _ranges(pages)
+        if name == "rotate-right":
+            self.apply("Rotate", lambda d: run("Pages.Rotate", d, 90, spec))
+        elif name == "rotate-left":
+            self.apply("Rotate", lambda d: run("Pages.Rotate", d, 270, spec))
+        elif name == "delete":
+            if QMessageBox.question(self, "Delete pages", f"Delete page(s) {spec}?") == QMessageBox.Yes:
+                self.apply("Delete pages", lambda d: run("Pages.Delete", d, spec))
+        elif name == "extract":
+            self.new_doc(run("Pages.Extract", v.doc, spec), f"extract-{spec}.pdf")
+        elif name == "duplicate":
+            def dup(d):
+                for k, i in enumerate(pages):
+                    d.fullcopy_page(i + k, pages[-1] + 1 + k)
+            self.apply("Duplicate pages", dup)
+        elif name == "insert-blank":
+            r = v.doc[pages[-1]].rect
+            self.apply("Insert blank page", lambda d: run("Pages.InsertBlank", d, pages[-1] + 1, r.width, r.height))
+        elif name == "insert-file":
+            self.insert_file(pages[-1] + 1)
+
+    def split(self):
+        v = self.cur()
+        if not v:
+            return
+        dlg = dialogs.SplitDialog(self, bool([t for t in v.doc.get_toc() if t[0] == 1]))
+        if dlg.exec() != dlg.Accepted:
+            return
+        out = QFileDialog.getExistingDirectory(self, "Output folder")
+        if not out:
+            return
+        parts = run("Pages.Split", v.doc, **dlg.values())
+        base = os.path.splitext(os.path.basename(v.path or "document"))[0]
+        for k, (name, d) in enumerate(parts, 1):
+            safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in name)
+            d.save(os.path.join(out, f"{base}_{k:02d}_{safe}.pdf"), garbage=3, deflate=True)
+        self.msg(f"Wrote {len(parts)} files to {out}")
+
+    def combine_files(self):
+        ps = QFileDialog.getOpenFileNames(self, "Combine files", "", "All supported files (*)")[0]
+        if ps:
+            try:
+                self.new_doc(run("Convert.Combine", ps), "combined.pdf")
+            except Exception as e:  # noqa: BLE001
+                self.error("Combine", e)
+
+    def header_footer(self, bates=False):
+        d = dialogs.HeaderFooterDialog(self, bates)
+        if d.exec() == d.Accepted:
+            kw = d.values()
+            self.apply("Bates numbering" if bates else "Header & footer", lambda doc: run("Pages.HeaderFooter", doc, **kw))
+
+    def bates(self):
+        self.header_footer(bates=True)
+
+    def watermark(self):
+        d = dialogs.WatermarkDialog(self)
+        if d.exec() == d.Accepted:
+            kw = d.values()
+            self.apply("Watermark", lambda doc: run("Pages.Watermark", doc, **kw))
+
+    def delete_all_comments(self):
+        if self.cur() and QMessageBox.question(self, "Delete comments", "Delete all comments?") == QMessageBox.Yes:
+            def go(d):
+                for c in run("Comment.List", d):
+                    run("Comment.Delete", d, c["page"], c["xref"])
+            self.apply("Delete all comments", go)
+
+    # ---- edit ----------------------------------------------------------------------------------------------
+    def find_replace(self):
+        v = self.cur()
+        if not v:
+            return
+        f, ok = QInputDialog.getText(self, "Replace", "Find:", text=self.find_box.text())
+        if not ok or not f:
+            return
+        r, ok = QInputDialog.getText(self, "Replace", f"Replace “{f}” with:")
+        if not ok:
+            return
+        n = self.apply("Replace text", lambda d: run("Text.Replace", d, f, r))
+        if n is not None:
+            self.msg(f"{n} replacement(s)")
+
+    def properties(self):
+        v = self.cur()
+        if not v:
+            return
+        d = dialogs.PropertiesDialog(self, v.doc, v.path)
+        if d.exec() == d.Accepted:
+            vals = d.values()
+            self.apply("Properties", lambda doc: doc.set_metadata({**(doc.metadata or {}), **vals}))
+
+    # ---- protect ----------------------------------------------------------------------------------------------
+    def search_redact(self):
+        t, ok = QInputDialog.getText(self, "Search & Redact", "Text to mark for redaction:")
+        if ok and t:
+            n = self.apply("Search & redact", lambda d: run("Redact.Search", d, needle=t))
+            if n is not None:
+                self.msg(f"{n} item(s) marked — use Apply to remove them permanently")
+
+    def pattern_redact(self, kind: str):
+        n = self.apply(f"Redact {kind}", lambda d: run("Redact.Search", d, kind=kind))
+        if n is not None:
+            self.msg(f"{n} item(s) marked — use Apply to remove them permanently")
+
+    def apply_redactions(self):
+        v = self.cur()
+        if not v:
+            return
+        n = sum(1 for p in v.doc for a in (p.annots(types=[pymupdf.PDF_ANNOT_REDACT]) or []))
+        if not n:
+            return self.msg("Nothing is marked for redaction")
+        if QMessageBox.warning(self, "Apply redactions", f"Permanently remove {n} marked item(s)? This cannot be "
+                               "undone after saving.", QMessageBox.Ok | QMessageBox.Cancel) == QMessageBox.Ok:
+            self.apply("Apply redactions", lambda d: run("Redact.Apply", d))
+
+    def password(self):
+        v = self.cur()
+        if not v:
+            return
+        s = dialogs.PasswordDialog.ask(self)
+        if s:
+            v.security = s
+            v.readonly = False
+            v.modified = True
+            self._title()
+            self.msg("Password protection will be applied when you save")
+
+    def remove_security(self):
+        v = self.cur()
+        if v and v.security:
+            if v.readonly:
+                return self.error("Security", "Open the document with its permissions password first.")
+            v.security = None
+            v.modified = True
+            self._title()
+            self.msg("Security will be removed when you save")
+
+    def create_id(self):
+        p = dialogs.CreateIDDialog.ask(self, self.author)
+        if p:
+            self.msg(f"Digital ID saved: {p}")
+
+    def create_signature(self):
+        s = dialogs.SignatureDialog.ask(self, self.author)
+        if s:
+            self._use_signature(s)
+
+    def digital_sign(self, a: dict | None, certify: bool = False):
+        v = self.cur()
+        if not v:
+            return
+        if v.security:
+            return self.error("Sign", "Remove password protection before signing; sign, then protect a copy.")
+        vals = dialogs.DigitalSignDialog.ask(self, certify, self.author)
+        if not vals:
+            return
+        page = a["page"] if a else None
+        rect = a["rect"] if a and not vals["invisible"] else None
+        if rect is None and not vals["invisible"] and not certify and a is None:
+            vals["invisible"] = True
+        base = os.path.splitext(v.path or "document.pdf")[0] + ("_certified.pdf" if vals["certify"] else "_signed.pdf")
+        dst = QFileDialog.getSaveFileName(self, "Save signed copy", base, "PDF (*.pdf)")[0]
+        if not dst:
+            return
+        try:
+            run("Sign.Digital", v.doc.tobytes(), dst, vals["pfx"], vals["password"], page=page, rect=rect,
+                reason=vals["reason"], location=vals["location"], certify=vals["certify"])
+        except Exception as e:  # noqa: BLE001
+            return self.error("Sign", e)
+        self.open_path(dst)
+        self.msg("Signed. Further edits to a signed file invalidate the signature unless saved incrementally.")
+
+    def validate(self):
+        v = self.cur()
+        if not v or not v.path:
+            return self.error("Validate", "Save the document first.")
+        from .dialogs import IDS
+        certs = sorted(glob.glob(str(IDS / "*.cer")))
+        try:
+            res = run("Sign.Validate", v.path, trusted_certs=certs)
+        except Exception as e:  # noqa: BLE001
+            return self.error("Validate", e)
+        if not res:
+            return QMessageBox.information(self, "Signatures", "This document has no digital signatures.")
+        lines = []
+        for r in res:
+            state = "VALID" if r["valid"] and r["intact"] else "INVALID"
+            lines.append(f"{r['field']}: {state}\n  Signer: {r['signer']}\n  Trusted: {'yes (your own ID)' if r['trusted'] else 'no'}\n"
+                         f"  Covers: {r['coverage']}   Changes after signing: {r['modification_level']}")
+        QMessageBox.information(self, "Signatures", "\n\n".join(lines))
+
+    # ---- compare ----------------------------------------------------------------------------------------------
+    def compare(self):
+        v = self.cur()
+        if not v:
+            return
+        p = QFileDialog.getOpenFileName(self, "Compare current document (old) with… (new)", "", "PDF (*.pdf)")[0]
+        if not p:
+            return
+        try:
+            res, changes = run("Compare.Run", v.doc, pymupdf.open(p))
+        except Exception as e:  # noqa: BLE001
+            return self.error("Compare", e)
+        self.new_doc(res, "comparison.pdf")
+        self.msg(f"{len(changes)} change(s) found")
+
+    # ---- convert ----------------------------------------------------------------------------------------------
+    def _current_file(self) -> str | None:
+        """A path with the current state of the document (a temp copy when it has unsaved changes)."""
+        v = self.cur()
+        if not v:
+            return None
+        if v.path and not v.modified:
+            return v.path
+        f = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        f.write(v.doc.tobytes())
+        f.close()
+        return f.name
+
+    def create_from_file(self):
+        p = QFileDialog.getOpenFileName(self, "Create PDF from file")[0]
+        if p:
+            self.msg("Converting…")
+            QApplication.processEvents()
+            try:
+                self.new_doc(run("Convert.FromFile", p), os.path.splitext(os.path.basename(p))[0] + ".pdf")
+            except Exception as e:  # noqa: BLE001
+                self.error("Create PDF", e)
+
+    def export(self, fmt: str):
+        v = self.cur()
+        if not v:
+            return
+        base = os.path.splitext(os.path.basename(v.path or "document"))[0]
+        try:
+            if fmt in ("png", "jpg", "tiff"):
+                out = QFileDialog.getExistingDirectory(self, "Folder for images")
+                if not out:
+                    return
+                n = len(run("Convert.ToImages", v.doc, out, fmt=fmt))
+                return self.msg(f"Wrote {n} image(s) to {out}")
+            ext = {"docx": "docx", "xlsx": "xlsx", "pptx": "pptx", "rtf": "rtf", "txt": "txt", "html": "html"}[fmt]
+            out = QFileDialog.getSaveFileName(self, "Export", f"{base}.{ext}")[0]
+            if not out:
+                return
+            self.msg("Exporting…")
+            QApplication.processEvents()
+            if fmt == "docx":
+                run("Convert.ToWord", self._current_file(), out)
+            elif fmt == "rtf":
+                run("Convert.ToRtf", self._current_file(), out)
+            elif fmt == "xlsx":
+                run("Convert.ToExcel", v.doc, out)
+            elif fmt == "pptx":
+                run("Convert.ToPowerPoint", v.doc, out)
+            elif fmt == "txt":
+                run("Convert.ToText", v.doc, out)
+            else:
+                run("Convert.ToHtml", v.doc, out)
+            self.msg(f"Exported {out}")
+        except Exception as e:  # noqa: BLE001
+            self.error("Export", e)
+
+    def ocr(self):
+        v = self.cur()
+        if not v:
+            return
+        langs, ok = QInputDialog.getText(self, "OCR", "Languages (Tesseract codes, e.g. eng+deu+ara):", text="eng")
+        if not ok:
+            return
+        self.msg("Running OCR…")
+        QApplication.processEvents()
+        try:
+            src = self._current_file()
+            out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False).name
+            run("Ocr.Run", src, out, languages=langs.split("+"))
+            with open(out, "rb") as f:
+                new = pymupdf.open("pdf", f.read())
+        except Exception as e:  # noqa: BLE001
+            return self.error("OCR", e)
+        self.apply("OCR", lambda d: new)
+
+    def to_pdfa(self):
+        v = self.cur()
+        if not v:
+            return
+        out = QFileDialog.getSaveFileName(self, "Save PDF/A copy", (os.path.splitext(v.path or "document")[0]) + "_pdfa.pdf",
+                                          "PDF (*.pdf)")[0]
+        if out:
+            self.msg("Converting to PDF/A…")
+            QApplication.processEvents()
+            try:
+                run("Convert.ToPDFA", self._current_file(), out)
+                self.open_path(out)
+            except Exception as e:  # noqa: BLE001
+                self.error("PDF/A", e)
+
+
+def launch(argv):
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setApplicationName("pdfdesk")
+    w = Main()
+    for a in argv:
+        if a.lower().endswith(".pdf") and os.path.exists(a):
+            w.open_path(a)
+    w.show()
+    return app.exec()
