@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=pdfdesk
+Comment=PDF editor
+Exec=pdfdesk %F
+Icon=application-pdf
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
