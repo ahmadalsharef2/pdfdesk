@@ -14,7 +14,7 @@ def command(name: str):
     return deco
 
 
-def run(name: str, *args, **kwargs):
+def run(name: str, /, *args, **kwargs):
     import pdfdesk.commands  # noqa: F401  (registers everything)
     if name not in COMMANDS:
         raise KeyError(f"unknown command: {name}")

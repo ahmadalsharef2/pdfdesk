@@ -15,7 +15,8 @@ from ..commands import edit as edit_cmds
 from ..commands import search
 
 RECT_TOOLS = {"select", "textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
-              "digital-sign", "stamp", "image"}
+              "digital-sign", "stamp", "image", "link", "field-text", "field-check", "field-radio", "field-combo",
+              "field-list", "field-button", "field-sign"}
 LINE_TOOLS = {"line", "arrow", "callout"}
 MARKUP_TOOLS = {"highlight", "underline", "strikeout", "squiggly", "replace-text"}
 POINT_TOOLS = {"note", "file", "typewriter", "add-text", "insert-text"}
@@ -31,6 +32,7 @@ class DocView(QAbstractScrollArea):
 
     GAP = 12
     UNDO_LIMIT = 30
+    CACHE_BYTES = 256 * 2**20
 
     def __init__(self, doc: pymupdf.Document, path: str | None = None, password: str | None = None):
         super().__init__()
@@ -193,7 +195,8 @@ class DocView(QAbstractScrollArea):
         if img is None:
             pm = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(self.zoom, self.zoom), alpha=False)
             img = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format_RGB888).copy()
-            if len(self._cache) > 40:
+            # bound by bytes, not count: at high zoom a single page is tens of MB
+            while self._cache and sum(c.sizeInBytes() for c in self._cache.values()) + img.sizeInBytes() > self.CACHE_BYTES:
                 self._cache.pop(next(iter(self._cache)))
             self._cache[key] = img
         return img
@@ -287,6 +290,10 @@ class DocView(QAbstractScrollArea):
         self.setFocus()
         if self.tool == "hand":
             if i is not None:
+                w = next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None)
+                if w is not None:
+                    self._emit(tool="fill-field", page=i + 1, xref=w.xref)
+                    return
                 from ..commands.comment import annot_at
                 xref = annot_at(self.doc, i + 1, pt)
                 self.selected = (i, xref) if xref else None

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Build dist/pdfdesk_<version>_amd64.deb from the PyInstaller folder in dist/pdfdesk.
-# Usage: packaging/build_deb.sh <version>
+# Usage: packaging/build_deb.sh [version]   (run packaging/build_bundle.sh first; version defaults to pyproject)
 set -euo pipefail
 umask 022
-version="${1:?version}"
+version="${1:-$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)}"
 root="build/deb"
 rm -rf "$root"
 mkdir -p "$root/DEBIAN" "$root/opt" "$root/usr/bin" "$root/usr/share/applications"
 cp -r dist/pdfdesk "$root/opt/pdfdesk"
 ln -s /opt/pdfdesk/pdfdesk "$root/usr/bin/pdfdesk"
 cp packaging/pdfdesk.desktop "$root/usr/share/applications/"
+mkdir -p "$root/usr/share/icons/hicolor/scalable/apps"
+python -c "from pdfdesk.gui.icons import APP_SVG; print(APP_SVG, end='')" > "$root/usr/share/icons/hicolor/scalable/apps/pdfdesk.svg"
 cat > "$root/DEBIAN/control" <<CTRL
 Package: pdfdesk
 Version: $version
