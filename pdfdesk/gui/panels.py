@@ -106,11 +106,15 @@ class Thumbnails(QListWidget):
 
 
 class Bookmarks(QTreeWidget):
+    """Bookmark tree; right-click to add, rename, delete or change level (the app runs the command)."""
     activated_page = Signal(int)
+    command = Signal(str, int)  # command name, index into the outline (-1: none selected)
 
     def __init__(self):
         super().__init__()
         self.setHeaderHidden(True)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
         self.itemClicked.connect(lambda it, _c: it.data(0, ROLE) is not None and
                                  self.activated_page.emit(it.data(0, ROLE)))
 
@@ -119,12 +123,29 @@ class Bookmarks(QTreeWidget):
         if doc is None:
             return
         parents = {0: self.invisibleRootItem()}
-        for lvl, title, page, *_ in doc.get_toc():
+        for k, (lvl, title, page, *_) in enumerate(doc.get_toc()):
             parent = parents.get(lvl - 1, self.invisibleRootItem())
             it = QTreeWidgetItem(parent, [title])
             it.setData(0, ROLE, max(0, page - 1))
+            it.setData(0, ROLE + 1, k)
             parents[lvl] = it
         self.expandToDepth(0)
+
+    def _menu(self, pos):
+        it = self.itemAt(pos)
+        k = it.data(0, ROLE + 1) if it is not None else -1
+        m = QMenu(self)
+        m.addAction("Add bookmark here…", lambda: self.command.emit("add", k))
+        if it is not None:
+            m.addAction("Add child bookmark…", lambda: self.command.emit("add-child", k))
+            m.addAction("Rename…", lambda: self.command.emit("rename", k))
+            m.addAction("Set to current page", lambda: self.command.emit("set-page", k))
+            m.addAction("Promote", lambda: self.command.emit("promote", k))
+            m.addAction("Demote", lambda: self.command.emit("demote", k))
+            m.addAction("Delete", lambda: self.command.emit("delete", k))
+        m.addSeparator()
+        m.addAction("Create from headings", lambda: self.command.emit("from-headings", k))
+        m.exec(self.viewport().mapToGlobal(pos))
 
 
 class Comments(QListWidget):

@@ -105,8 +105,8 @@ class Ribbon(QWidget):
     def small(text: str, ic: str, fn=None, checkable=False, tip: str | None = None, menu: list | None = None):
         b = QToolButton()
         b.setText(text.replace("&", "&&"))
-        b.setIcon(icon(ic, 20))
-        b.setIconSize(QSize(18, 18))
+        b.setIcon(icon(ic, 16))
+        b.setIconSize(QSize(16, 16))
         b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setFixedHeight(22)
         b.setMinimumWidth(84)
@@ -118,11 +118,11 @@ class Ribbon(QWidget):
         return b
 
     @staticmethod
-    def tiny(ic: str, tip: str, fn=None, checkable=False):
+    def tiny(ic: str, tip: str, fn=None, checkable=False, size: int = 20):
         b = QToolButton()
-        b.setIcon(icon(ic, 22))
-        b.setIconSize(QSize(20, 20))
-        b.setFixedSize(26, 26)
+        b.setIcon(icon(ic, size + 2))
+        b.setIconSize(QSize(size, size))
+        b.setFixedSize(size + 6, size + 6)
         b.setToolTip(tip)
         b.setCheckable(checkable)
         Ribbon._attach(b, fn, None)
@@ -148,6 +148,7 @@ class Ribbon(QWidget):
         for b in buttons:
             l.addWidget(b)
         l.addStretch(1)
+        w.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)  # small buttons expand; the stack must not
         return w
 
     @staticmethod
@@ -163,6 +164,7 @@ class Ribbon(QWidget):
     # ---- groups ---------------------------------------------------------------------------------------------
     def group(self, tab: str, title: str, widgets: list):
         box = QWidget()
+        box.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         col = QVBoxLayout(box)
         col.setContentsMargins(4, 0, 4, 0)
         col.setSpacing(0)

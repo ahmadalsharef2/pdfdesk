@@ -12,7 +12,7 @@ import tempfile
 import pymupdf
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QMainWindow, QMessageBox, QSpinBox, QSplitter, QStackedWidget,
                                QTabBar, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
@@ -20,7 +20,7 @@ from ..commands import comment as comment_cmds
 from ..commands import run
 from ..core import security as sec
 from . import dialogs
-from .icons import icon
+from .icons import app_icon, icon
 from .panels import Bookmarks, Comments, Thumbnails
 from .ribbon import Ribbon
 from .start import StartPage, add_recent
@@ -28,7 +28,7 @@ from .viewer import DocView
 
 RIBBON = ["File", "Home", "Convert", "Edit", "Fill && Sign", "Organize", "Comment", "View", "Form",
           "Protect", "Share", "Connect", "Accessibility", "Help"]
-NOT_YET = {"Form": "Form fields and filling", "Share": "Email, shared review and cloud drives",
+NOT_YET = {"Share": "Email, shared review and cloud drives",
            "Connect": "Connected services", "Accessibility": "Accessibility check and tagging"}
 
 TOOL_HINTS = {
@@ -152,6 +152,7 @@ class Main(QMainWindow):
 
         self.thumbs.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
         self.bookmarks.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
+        self.bookmarks.command.connect(self.bookmark_command)
         self.comments.activated.connect(self._focus_comment)
         self.thumbs.reordered.connect(self._reorder)
         self.thumbs.pageCommand.connect(self._page_command)
@@ -174,7 +175,7 @@ class Main(QMainWindow):
         h = QHBoxLayout(bar)
         h.setContentsMargins(6, 1, 6, 1)
         h.setSpacing(1)
-        T = Ribbon.tiny
+        T = lambda ic, tip, fn, checkable=False: Ribbon.tiny(ic, tip, fn, checkable, size=16)  # Foxit's QAT size
         for ic, tip, fn in (("open", "Open (Ctrl+O)", self.open_dialog), ("save", "Save (Ctrl+S)", self.save),
                             ("print", "Print (Ctrl+P)", self.print_doc), ("undo", "Undo (Ctrl+Z)", self.undo),
                             ("redo", "Redo (Ctrl+Y)", self.redo)):
@@ -378,6 +379,9 @@ class Main(QMainWindow):
                            L("Save As", "save", self.save_as), L("Print", "print", self.print_doc),
                            L("Close", "close", lambda: self.close_tab(self.docs.currentIndex()))])
         G("File", "History", [stack(S("Undo", "undo", self.undo), S("Redo", "redo", self.redo))])
+        G("File", "Optimize", [LM("Reduce File Size", "optimize", [(f"{q.capitalize()} quality", lambda q=q: self.optimize(q))
+                                                                    for q in ("high", "medium", "low", "minimum")]),
+                               L("Audit Space Usage", "audit", self.audit_space)])
 
         # Home
         self.tools_group("Home")
@@ -385,6 +389,7 @@ class Main(QMainWindow):
                            L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
                            stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)),
                                  S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
+        G("Home", "Find", [L("Advanced Search", "search-folder", self.folder_search)])
         G("Home", "Create", [L("From File", "create", self.create_from_file), L("Combine", "combine", self.combine_files)])
         G("Home", "Edit", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text")])
         G("Home", "Review", [stack(self.TS("Highlight", "highlight"), self.TS("Note", "note"),
@@ -411,6 +416,10 @@ class Main(QMainWindow):
         self.tools_group("Edit")
         G("Edit", "Content", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text"), TL("Add Image", "image")])
         G("Edit", "Find", [L("Replace", "replace", self.find_replace)])
+        G("Edit", "Links", [TL("Link", "link"), stack(S("Create from URLs", "link", lambda: self._count(
+                                "Create links", lambda d: run("Links.Detect", d), "link(s) created")),
+                                S("Remove All Links", "delete", lambda: self._count(
+                                    "Remove links", lambda d: run("Links.Remove", d), "link(s) removed")))])
         G("Edit", "Document", [L("Properties", "properties", self.properties)])
 
         # Fill & Sign
@@ -426,6 +435,8 @@ class Main(QMainWindow):
                                 stack(S("Rotate Right", "rotate-r", lambda: self._pages_cmd("Pages.Rotate", angle=90)),
                                       S("Rotate Left", "rotate-l", lambda: self._pages_cmd("Pages.Rotate", angle=270)),
                                       S("Reverse", "reverse", lambda: self.apply("Reverse pages", lambda d: run("Pages.Reverse", d))))])
+        G("Organize", "Bookmarks", [L("From Headings", "bookmarks", lambda: self.bookmark_command("from-headings", -1)),
+                                    S("Add Bookmark", "bookmarks", lambda: self.bookmark_command("add", -1))])
         G("Organize", "Files", [L("Combine", "combine", self.combine_files), L("Split", "split", self.split)])
         G("Organize", "Page Layout", [stack(S("Crop White", "crop", lambda: self._pages_cmd("Pages.Crop", remove_white=True)),
                                             S("Flatten", "flatten", lambda: self.apply("Flatten", lambda d: run("Pages.Flatten", d))))])
@@ -459,6 +470,7 @@ class Main(QMainWindow):
         G("View", "Zoom", [L("Fit Width", "fit-width", lambda: self.cur() and self.cur().fit_width()),
                            L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
                            stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)), S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
+        G("View", "Layers", [L("Layers", "layers", self.layers)])
         G("View", "Panels", [L("Navigation Panels", "navigation", self.toggle_nav, tip="Show or hide the navigation panels (F4)")])
         G("View", "Compare", [L("Compare", "compare", self.compare)])
 
@@ -474,6 +486,22 @@ class Main(QMainWindow):
                                   L("Remove Hidden Info", "hidden", lambda: self.apply("Remove hidden info", lambda d: run("Protect.RemoveHiddenInfo", d)))])
         G("Protect", "Sign & Certify", [TL("Sign", "digital-sign"), L("Certify", "certify", lambda: self.digital_sign(None, certify=True)),
                                         stack(S("Create ID", "id", self.create_id), S("Validate", "validate", self.validate))])
+
+        # Form — Foxit's Form tab: Tools | Form Fields | Form Recognition | Form Data | Manage
+        self.tools_group("Form")
+        G("Form", "Form Fields", [grid([TI("Text Field", "field-text"), TI("Check Box", "field-check"),
+                                        TI("Radio Button", "field-radio"), TI("Combo Box", "field-combo"),
+                                        TI("List Box", "field-list"), TI("Push Button", "field-button"),
+                                        TI("Signature Field", "field-sign")], 4)])
+        G("Form", "Form Recognition", [L("Recognize Fields", "recognize", lambda: self._count(
+            "Form field recognition", lambda d: len(run("Form.Recognize", d)), "field(s) created"))])
+        G("Form", "Form Data", [L("Import", "import", self.form_import),
+                                LM("Export", "export", [(f"{x.upper()} (.{x})", lambda x=x: self.form_export(x))
+                                                        for x in ("fdf", "xfdf", "json", "csv")]),
+                                L("Reset Form", "reset", lambda: self.apply("Reset form", lambda d: run("Form.Reset", d)))])
+        G("Form", "Manage", [L("Calculate", "calc", self.form_calculate),
+                             stack(S("Flatten Form", "flatten", lambda: self.apply("Flatten form", lambda d: run("Form.Flatten", d))),
+                                   S("Delete All Fields", "delete-all", self.delete_all_fields))])
 
         for tab, what in NOT_YET.items():
             r.note(tab, f"{what} are planned for a later phase.")
@@ -586,6 +614,12 @@ class Main(QMainWindow):
                 return p and self.apply("Add image", lambda d: run("Sign.Image", d, page, a["rect"], path=p))
             if t == "sign-place":
                 return self._place_signature(a)
+            if t == "fill-field":
+                return self.fill_field(page, a["xref"])
+            if t.startswith("field-") and a["rect"]:
+                return self.add_field(t[6:], page, a["rect"])
+            if t == "link" and a["rect"]:
+                return self.add_link(page, a["rect"])
             if t == "digital-sign" and a["rect"]:
                 return self.digital_sign(a)
         except Exception as e:  # noqa: BLE001
@@ -883,7 +917,7 @@ class Main(QMainWindow):
         if not v:
             return
         dlg = dialogs.SplitDialog(self, bool([t for t in v.doc.get_toc() if t[0] == 1]))
-        if dlg.exec() != dlg.Accepted:
+        if dlg.exec() != QDialog.Accepted:
             return
         out = QFileDialog.getExistingDirectory(self, "Output folder")
         if not out:
@@ -905,7 +939,7 @@ class Main(QMainWindow):
 
     def header_footer(self, bates=False):
         d = dialogs.HeaderFooterDialog(self, bates)
-        if d.exec() == d.Accepted:
+        if d.exec() == QDialog.Accepted:
             kw = d.values()
             self.apply("Bates numbering" if bates else "Header & footer", lambda doc: run("Pages.HeaderFooter", doc, **kw))
 
@@ -914,7 +948,7 @@ class Main(QMainWindow):
 
     def watermark(self):
         d = dialogs.WatermarkDialog(self)
-        if d.exec() == d.Accepted:
+        if d.exec() == QDialog.Accepted:
             kw = d.values()
             self.apply("Watermark", lambda doc: run("Pages.Watermark", doc, **kw))
 
@@ -945,9 +979,214 @@ class Main(QMainWindow):
         if not v:
             return
         d = dialogs.PropertiesDialog(self, v.doc, v.path)
-        if d.exec() == d.Accepted:
+        if d.exec() == QDialog.Accepted:
             vals = d.values()
             self.apply("Properties", lambda doc: doc.set_metadata({**(doc.metadata or {}), **vals}))
+
+    def _count(self, label: str, fn, what: str):
+        n = self.apply(label, fn)
+        if n is not None:
+            self.msg(f"{n} {what}")
+
+    # ---- forms ------------------------------------------------------------------------------------------------
+    def fill_field(self, page: int, xref: int):
+        v = self.cur()
+        f = next((f for f in run("Form.List", v.doc) if f["xref"] == xref), None)
+        if f is None or f["readonly"]:
+            return
+        kind = f["type"]
+        if kind in ("checkbox", "radio"):
+            value = True if kind == "radio" else not f["value"]
+        elif kind in ("combo", "list"):
+            opts = f["options"] or [""]
+            cur = opts.index(f["value"]) if f["value"] in opts else 0
+            value, ok = QInputDialog.getItem(self, f["name"], f"{f['name']}:", opts, cur, kind == "combo")
+            if not ok:
+                return
+        elif kind == "text":
+            value, ok = QInputDialog.getMultiLineText(self, f["name"], f"{f['name']}:", f["value"] or "")
+            if not ok:
+                return
+        elif kind == "signature":
+            return self.digital_sign({"tool": "digital-sign", "page": page, "rect": pymupdf.Rect(f["rect"]),
+                                      "field": f["name"]})
+        else:
+            return
+        self.apply(f"Fill {f['name']}", lambda d: run("Form.SetField", d, page, xref, value))
+
+    def add_field(self, kind: str, page: int, rect):
+        kinds = {"text": "text", "check": "checkbox", "radio": "radio", "combo": "combo", "list": "list",
+                 "button": "button", "sign": "signature"}
+        k = kinds[kind]
+        kw = {}
+        if k == "radio":
+            groups = sorted({f["name"] for f in run("Form.List", self.cur().doc) if f["type"] == "radio"}) or ["Group1"]
+            g, ok = QInputDialog.getItem(self, "Radio button", "Group (buttons in one group exclude each other):",
+                                         groups, len(groups) - 1, True)
+            if not ok or not g:
+                return
+            c, ok = QInputDialog.getText(self, "Radio button", "This button's value:", text="Choice")
+            if not ok or not c:
+                return
+            kw = {"group": g, "name": c}
+        else:
+            name, ok = QInputDialog.getText(self, "New field", "Field name:")
+            if not ok:
+                return
+            kw["name"] = name or None
+            if k in ("combo", "list"):
+                o, ok = QInputDialog.getText(self, "Options", "Options, separated by commas:", text="Option 1, Option 2")
+                if not ok:
+                    return
+                kw["options"] = [x.strip() for x in o.split(",") if x.strip()]
+            if k == "text" and rect.height > 40:
+                kw["multiline"] = True
+        self.apply(f"Add {k} field", lambda d: run("Form.AddField", d, page, rect, k, **kw))
+
+    def form_import(self):
+        p = QFileDialog.getOpenFileName(self, "Import form data", "", "Form data (*.fdf *.xfdf *.json *.csv)")[0]
+        if p:
+            self._count("Import form data", lambda d: run("Form.Import", d, p), "field(s) filled")
+
+    def form_export(self, ext: str):
+        v = self.cur()
+        if not v:
+            return
+        base = os.path.splitext(v.path or "form.pdf")[0] + f".{ext}"
+        p = QFileDialog.getSaveFileName(self, "Export form data", base, f"{ext.upper()} (*.{ext})")[0]
+        if p:
+            try:
+                n = len(run("Form.Export", v.doc, p, source=os.path.basename(v.path or "form.pdf")))
+                self.msg(f"{n} field(s) exported to {p}")
+            except Exception as e:  # noqa: BLE001
+                self.error("Export form data", e)
+
+    def form_calculate(self):
+        v = self.cur()
+        if not v:
+            return
+        names = sorted({f["name"] for f in run("Form.List", v.doc) if f["type"] == "text"})
+        if len(names) < 2:
+            return self.error("Calculate", "The form needs at least two text fields.")
+        target, ok = QInputDialog.getItem(self, "Calculate", "Result field:", names, 0, False)
+        if not ok:
+            return
+        src, ok = QInputDialog.getText(self, "Calculate", "Fields to combine, separated by commas:",
+                                       text=", ".join(n for n in names if n != target))
+        if not ok:
+            return
+        op, ok = QInputDialog.getItem(self, "Calculate", "Operation:", ["sum", "product", "average", "min", "max"], 0, False)
+        if ok:
+            r = self.apply("Calculate", lambda d: run("Form.Calculate", d, target,
+                                                     [x.strip() for x in src.split(",") if x.strip()], op))
+            if r is not None:
+                self.msg(f"{target} = {r:g}")
+
+    def delete_all_fields(self):
+        v = self.cur()
+        if v and QMessageBox.question(self, "Delete fields", "Delete every form field?") == QMessageBox.Yes:
+            self.apply("Delete all fields", lambda d: run("Form.DeleteField", d, [f["name"] for f in run("Form.List", d)]))
+
+    # ---- links, bookmarks, layers ------------------------------------------------------------------------------
+    def add_link(self, page: int, rect):
+        v = self.cur()
+        kind, ok = QInputDialog.getItem(self, "Create link", "Link to:", ["Web address", "Page in this document",
+                                                                          "Another file"], 0, False)
+        if not ok:
+            return
+        if kind == "Web address":
+            url, ok = QInputDialog.getText(self, "Create link", "URL:", text="https://")
+            if ok and url:
+                self.apply("Add link", lambda d: run("Links.AddUrl", d, page, rect, url))
+        elif kind == "Page in this document":
+            n, ok = QInputDialog.getInt(self, "Create link", "Go to page:", v.current_page() + 1, 1, v.doc.page_count)
+            if ok:
+                self.apply("Add link", lambda d: run("Links.AddPage", d, page, rect, n))
+        else:
+            p = QFileDialog.getOpenFileName(self, "Link to file")[0]
+            if p:
+                self.apply("Add link", lambda d: run("Links.AddFile", d, page, rect, p))
+
+    def bookmark_command(self, what: str, k: int):
+        v = self.cur()
+        if not v:
+            return
+        here = v.current_page() + 1
+        toc = v.doc.get_toc()
+        if what == "from-headings":
+            if toc and QMessageBox.question(self, "Bookmarks", "Replace the existing bookmarks?") != QMessageBox.Yes:
+                return
+            return self._count("Bookmarks from headings", lambda d: run("Bookmarks.FromHeadings", d), "bookmark(s) created")
+        if what in ("add", "add-child"):
+            t, ok = QInputDialog.getText(self, "Add bookmark", "Title:", text=f"Page {here}")
+            if not ok or not t:
+                return
+            if k < 0:
+                return self.apply("Add bookmark", lambda d: run("Bookmarks.Add", d, t, here))
+            lvl = toc[k][0] + (1 if what == "add-child" else 0)
+            end = k + 1
+            while end < len(toc) and toc[end][0] > toc[k][0]:
+                end += 1
+            return self.apply("Add bookmark", lambda d: run("Bookmarks.Add", d, t, here, level=lvl,
+                                                            index=k + 1 if what == "add-child" else end))
+        if what == "rename":
+            t, ok = QInputDialog.getText(self, "Rename bookmark", "Title:", text=toc[k][1])
+            return ok and t and self.apply("Rename bookmark", lambda d: run("Bookmarks.Rename", d, k, t))
+        if what == "set-page":
+            return self.apply("Bookmark destination", lambda d: run("Bookmarks.SetPage", d, k, here))
+        if what in ("promote", "demote"):
+            return self.apply(what.capitalize(), lambda d: run("Bookmarks.Indent", d, k, -1 if what == "promote" else 1))
+        if what == "delete":
+            return self.apply("Delete bookmark", lambda d: run("Bookmarks.Delete", d, k))
+
+    def layers(self):
+        v = self.cur()
+        if not v:
+            return
+        d = dialogs.LayersDialog(self, run("Layers.List", v.doc))
+        if d.exec() == QDialog.Accepted:
+            vals = d.values()
+
+            def go(doc):
+                for x, on in vals.items():
+                    run("Layers.SetVisible", doc, x, on)
+            self.apply("Layers", go)
+
+    # ---- optimize and search ------------------------------------------------------------------------------------
+    def optimize(self, quality: str):
+        v = self.cur()
+        if not v:
+            return
+        before = len(v.doc.tobytes(garbage=4, deflate=True))
+        if self.apply(f"Reduce file size ({quality})", lambda d: run("Optimize.Reduce", d, quality)) is None and \
+                not v.undo_stack:
+            return
+        after = len(v.doc.tobytes(garbage=4, deflate=True))
+        self.msg(f"Estimated size {before / 1e6:.2f} MB → {after / 1e6:.2f} MB. Save to write it.", 10000)
+
+    def audit_space(self):
+        v = self.cur()
+        if v:
+            a = run("Optimize.Audit", v.doc)
+            total = sum(a.values()) or 1
+            QMessageBox.information(self, "Audit Space Usage", "\n".join(
+                f"{k}: {n / 1024:,.0f} KB ({n * 100 / total:.0f}%)" for k, n in a.items()))
+
+    def folder_search(self):
+        def open_hit(path, page):
+            for i in range(self.docs.count()):
+                w = self.docs.widget(i)
+                if isinstance(w, DocView) and w.path == path:
+                    self.docs.setCurrentIndex(i)
+                    break
+            else:
+                w = self.open_path(path)
+            if w:
+                w.goto(page - 1)
+                w.find(dlg.text.text())
+        dlg = dialogs.FolderSearchDialog(self, open_hit)
+        dlg.show()
+        self._search_dlg = dlg
 
     # ---- protect ----------------------------------------------------------------------------------------------
     def search_redact(self):
@@ -1015,7 +1254,8 @@ class Main(QMainWindow):
         if not vals:
             return
         page = a["page"] if a else None
-        rect = a["rect"] if a and not vals["invisible"] else None
+        field = a.get("field") if a else None
+        rect = a["rect"] if a and not vals["invisible"] and not field else None
         if rect is None and not vals["invisible"] and not certify and a is None:
             vals["invisible"] = True
         base = os.path.splitext(v.path or "document.pdf")[0] + ("_certified.pdf" if vals["certify"] else "_signed.pdf")
@@ -1024,7 +1264,7 @@ class Main(QMainWindow):
             return
         try:
             run("Sign.Digital", v.doc.tobytes(), dst, vals["pfx"], vals["password"], page=page, rect=rect,
-                reason=vals["reason"], location=vals["location"], certify=vals["certify"])
+                reason=vals["reason"], location=vals["location"], certify=vals["certify"], field_name=field)
         except Exception as e:  # noqa: BLE001
             return self.error("Sign", e)
         self.open_path(dst)
@@ -1171,6 +1411,8 @@ class Main(QMainWindow):
 def launch(argv):
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("pdfdesk")
+    app.setDesktopFileName("pdfdesk")
+    app.setWindowIcon(app_icon())
     w = Main()
     for a in argv:
         if a.lower().endswith(".pdf") and os.path.exists(a):

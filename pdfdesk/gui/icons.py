@@ -29,6 +29,10 @@ GLYPHS = {
     "compare": ("⇋", BLUE), "navigation": ("☰", GRAY), "delete-all": ("🗑", RED), "help": ("?", BLUE),
     "pages": ("▤", GRAY), "bookmarks": ("🔖", GRAY), "comments": ("💬", GRAY), "attachments": ("📎", GRAY),
     "home": ("⌂", ACCENT), "tutorial": ("▶", ACCENT), "merge": ("⧉", BLUE), "move-pages": ("⇅", BLUE),
+    "field-text": ("▭", BLUE), "field-check": ("☑", GREEN), "field-radio": ("◉", BLUE), "field-combo": ("▾", BLUE),
+    "field-list": ("☰", BLUE), "field-button": ("▢", ORANGE), "field-sign": ("✍", GREEN), "recognize": ("⚡", ACCENT),
+    "import": ("⇩", BLUE), "export": ("⇧", BLUE), "reset": ("↺", GRAY), "calc": ("Σ", BLUE), "link": ("🔗", BLUE),
+    "layers": ("◫", GRAY), "optimize": ("⇲", GREEN), "audit": ("▥", GRAY), "search-folder": ("🔎", BLUE),
     "first": ("⏮", GRAY), "prev": ("◀", GRAY), "next": ("▶", GRAY), "last": ("⏭", GRAY),
 }
 
@@ -96,4 +100,32 @@ def icon(kind: str, size: int = 32) -> QIcon:
     p.end()
     ic = QIcon(pm)
     _cache[key] = ic
+    return ic
+
+
+# App icon: a page resting on a desk. Teal and amber, kept clear of the red/orange of other PDF tools.
+APP_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect x="2" y="2" width="60" height="60" rx="14" fill="#0e5e6f"/>
+<path d="M19 11h19l10 10v27a3 3 0 0 1-3 3H19a3 3 0 0 1-3-3V14a3 3 0 0 1 3-3z" fill="#fff"/>
+<path d="M38 11v8a2 2 0 0 0 2 2h8z" fill="#9fd3dc"/>
+<rect x="22" y="27" width="20" height="3" rx="1.5" fill="#0e5e6f"/>
+<rect x="22" y="34" width="14" height="3" rx="1.5" fill="#0e5e6f" opacity=".55"/>
+<rect x="9" y="49" width="46" height="6" rx="3" fill="#f2a93b"/>
+</svg>
+"""
+
+
+def app_icon() -> QIcon:
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtSvg import QSvgRenderer
+    svg = QSvgRenderer(QByteArray(APP_SVG.encode()))
+    ic = QIcon()
+    for s in (16, 24, 32, 48, 64, 128, 256):
+        pm = QPixmap(s, s)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        svg.render(p)
+        p.end()
+        ic.addPixmap(pm)
     return ic

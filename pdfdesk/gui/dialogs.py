@@ -508,3 +508,86 @@ class SplitDialog(QDialog):
 
     def values(self):
         return {"by_bookmarks": self.mode.currentIndex() == 1, "every": self.n.value()}
+
+
+class LayersDialog(QDialog):
+    """Show or hide optional-content layers."""
+    def __init__(self, parent, layers: list[dict]):
+        super().__init__(parent)
+        self.setWindowTitle("Layers")
+        lay = QVBoxLayout(self)
+        self.boxes = []
+        if not layers:
+            lay.addWidget(QLabel("This document has no layers."))
+        for ly in layers:
+            b = QCheckBox(ly["name"])
+            b.setChecked(ly["on"])
+            b.setProperty("xref", ly["xref"])
+            lay.addWidget(b)
+            self.boxes.append(b)
+        _buttons(self, lay)
+
+    def values(self) -> dict[int, bool]:
+        return {b.property("xref"): b.isChecked() for b in self.boxes}
+
+
+class FolderSearchDialog(QDialog):
+    """Advanced Search over every PDF in a folder; double-click a hit to open it at that page."""
+    def __init__(self, parent, open_hit):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        self._item = QListWidgetItem
+        self.setWindowTitle("Advanced Search")
+        self.resize(720, 480)
+        self.open_hit = open_hit
+        lay = QVBoxLayout(self)
+        f = QFormLayout()
+        self.text = QLineEdit()
+        row = QHBoxLayout()
+        self.folder = QLineEdit(str(Path.home() / "Documents"))
+        pick = QPushButton("Browse…")
+        pick.clicked.connect(lambda: (d := QFileDialog.getExistingDirectory(self, "Folder", self.folder.text()))
+                             and self.folder.setText(d))
+        row.addWidget(self.folder)
+        row.addWidget(pick)
+        f.addRow("Find:", self.text)
+        f.addRow("In folder:", row)
+        opts = QHBoxLayout()
+        self.sub, self.word, self.case = QCheckBox("Include subfolders"), QCheckBox("Whole words"), QCheckBox("Match case")
+        self.sub.setChecked(True)
+        for b in (self.sub, self.word, self.case):
+            opts.addWidget(b)
+        f.addRow("", opts)
+        lay.addLayout(f)
+        go = QPushButton("Search")
+        go.setDefault(True)
+        go.clicked.connect(self.search)
+        self.text.returnPressed.connect(self.search)
+        lay.addWidget(go)
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        self.results = QListWidget()
+        self.results.itemDoubleClicked.connect(lambda it: it.data(Qt.UserRole) and self.open_hit(*it.data(Qt.UserRole)))
+        lay.addWidget(self.results)
+
+    def search(self):
+        from ..commands import run
+        t = self.text.text().strip()
+        if not t or not os.path.isdir(self.folder.text()):
+            self.status.setText("Enter text and an existing folder.")
+            return
+        self.status.setText("Searching…")
+        self.repaint()
+        hits = run("Search.Folder", self.folder.text(), t, recursive=self.sub.isChecked(),
+                   whole_word=self.word.isChecked(), case=self.case.isChecked())
+        self.results.clear()
+        files = set()
+        for h in hits:
+            where = f"p.{h['page']}" if h["page"] else ""
+            it = self._item(f"{os.path.basename(h['path'])}  {where}   {h['context']}")
+            it.setToolTip(h["path"])
+            if h["page"]:
+                it.setData(Qt.UserRole, (h["path"], h["page"]))
+                files.add(h["path"])
+            self.results.addItem(it)
+        self.status.setText(f"{sum(1 for h in hits if h['page'])} matches in {len(files)} file(s)")

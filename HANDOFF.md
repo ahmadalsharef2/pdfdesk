@@ -78,7 +78,21 @@ Action Wizard all call the same commands).
   files; export to images (PNG/JPEG/TIFF), text, HTML, Word, RTF, Excel, PowerPoint; PDF/A through
   OCRmyPDF/Ghostscript. PDF/A was checked only by the XMP claim and presence of an output intent, **not
   validated with veraPDF**.
-- 25 earlier tests passed (organize, protect, compare, OCR, edit, comment, sign, convert, security). The
+- **Forms** (`forms.py`): list, fill, create fields (text, checkbox, radio groups, combo, list, button, signature),
+  field recognition (`____` → text field, `☐`/`[ ]` → checkbox), reset, calculate (sum/product/avg/min/max),
+  import/export JSON, FDF, XFDF, CSV, flatten. Radio buttons get their own on-state names (PyMuPDF names them all
+  `/True`, which links the whole group). Checked by round-tripping data and through the GUI (Form tab, click a
+  field with Hand to fill it, signature fields sign through the digital-sign dialog).
+- **Bookmarks, links, layers** (`navigate.py`): bookmark add/rename/delete/indent/set page/from headings (also a
+  right-click menu in the Bookmarks panel); links to URL/page/file, create links from URLs, remove; layers list,
+  show/hide (View > Layers), add. Links are read from `/Annots` because `Page.get_links()` misses links added
+  after the page loaded.
+- **Optimizer** (`optimize.py`): reduce file size with four presets (5.4 MB photo PDF → 1.6 MB / 735 KB /
+  233 KB), audit space usage. File tab.
+- **Advanced Search** (`Search.Folder`): every PDF in a folder, results open at the page. Home tab.
+- `d.Accepted` on a dialog instance does not exist in PySide6 6.12; split, header/footer, watermark and
+  properties dialogs were fixed to use `QDialog.Accepted`.
+- 28 tests pass (organize, protect, compare, OCR, edit, comment, sign, convert, security). The
   suite is in `tests/`.
 
 ### Written but not exercised
@@ -102,10 +116,9 @@ Action Wizard all call the same commands).
 
 ### Not built
 
-- Forms (fill, create fields, XFA, JavaScript), Action Wizard and the `.sequ` runner, preflight and PDF/A
-  checks with veraPDF, layers, links, bookmarks editing, article threads, advanced search and full-text index,
-  accessibility check and tagging, read aloud, portfolios, scanner input, virtual printer, PDF Optimizer
-  (advanced), page-level image editor, redaction code sets and profiles, shared review, cloud/DMS connectors,
+- Forms: XFA and JavaScript actions. Action Wizard and the `.sequ` runner, preflight and PDF/A
+  checks with veraPDF, layer flattening, article threads, full-text index,
+  accessibility check and tagging, read aloud, portfolios, scanner input, virtual printer,  page-level image editor, redaction code sets and profiles, shared review, cloud/DMS connectors,
   sensitivity labels. See the plan.
 - Known gaps in what exists: editing is per line (no paragraph reflow); header/footer, watermark and
   background removal relies on stream surgery that is only partly checked; text added with a script font
