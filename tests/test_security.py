@@ -66,3 +66,18 @@ def test_save_after_tobytes_keeps_encryption(tmp_path):
     d[0].add_text_annot((50, 50), "note")
     sec.save(d, p, s, incremental=True)
     assert pymupdf.open(p).needs_pass
+
+
+def test_save_after_snapshots_keeps_placed_signature(v1_path):
+    """Regression: an incremental save after undo snapshots dropped the page's new /Contents (blank page)."""
+    from pdfdesk.commands import run
+    d = pymupdf.open(v1_path)
+    d.tobytes()                                                       # undo checkpoint
+    run("Sign.Place", d, 2, (320, 600, 480, 650), {"kind": "typed", "name": "Jane Doe"}, ["Jane Doe"])
+    d.tobytes()                                                       # undo checkpoint
+    o = run("Object.List", d, 2)[-1]
+    run("Object.Transform", d, 2, o.index, o.rect + (10, 10, 10, 10))
+    text = d[1].get_text()
+    sec.save(d, v1_path, None, incremental=True)
+    r = pymupdf.open(v1_path)
+    assert r[1].get_text() == text and "Jane Doe" in text and len(r[1].get_text()) > 100
