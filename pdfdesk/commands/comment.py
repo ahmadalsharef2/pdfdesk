@@ -29,17 +29,45 @@ def _finish(annot, author: str | None, content: str | None = None, color=None, f
 
 
 # ---- text markup ----------------------------------------------------------------------------------
+def text_between(page: pymupdf.Page, start, stop, words=None) -> list[tuple[pymupdf.Rect, str]]:
+    """The text flow from the word at start to the word at stop, as (line box, line text), in reading order.
+    Either point may come first; a point off the text takes the nearest word, preferring its own line.
+    words: the page's get_text("words"), when the caller keeps it."""
+    words = page.get_text("words") if words is None else words
+    if not words:
+        return []
+
+    def gap(lo, hi, v):
+        return max(lo - v, 0, v - hi)
+
+    def nearest(pt):
+        pt = pymupdf.Point(pt)
+        same = [k for k, w in enumerate(words) if w[1] - 2 <= pt.y <= w[3] + 2]
+        if same:
+            return min(same, key=lambda k: gap(words[k][0], words[k][2], pt.x))
+        return min(range(len(words)), key=lambda k: gap(words[k][1], words[k][3], pt.y) * 4 +
+                   gap(words[k][0], words[k][2], pt.x))
+
+    a, b = sorted((nearest(start), nearest(stop)))
+    out: list[tuple[pymupdf.Rect, str]] = []
+    key = None
+    for w in words[a:b + 1]:
+        if (w[5], w[6]) != key:
+            key = (w[5], w[6])
+            out.append((pymupdf.Rect(w[:4]), w[4]))
+        else:
+            out[-1] = (out[-1][0] | pymupdf.Rect(w[:4]), out[-1][1] + " " + w[4])
+    return out
+
+
 def _markup(kind, doc, page, start, stop, author, color, note):
     p = doc[page - 1]
     fn = {"highlight": p.add_highlight_annot, "underline": p.add_underline_annot,
           "strikeout": p.add_strikeout_annot, "squiggly": p.add_squiggly_annot}[kind]
-    start, stop = pymupdf.Point(start), pymupdf.Point(stop)
-    if start.y > stop.y or (abs(start.y - stop.y) < 2 and start.x > stop.x):
-        start, stop = stop, start
-    words = [w for w in p.get_text("words", sort=True)]
-    if not words:
+    sel = text_between(p, start, stop)
+    if not sel:
         raise ValueError("no text on this page to mark up")
-    a = fn(start=start, stop=stop)
+    a = fn(quads=[r.quad for r, _t in sel])
     if a is None:
         raise ValueError("no text between those points")
     return _finish(a, author, note, color=color)

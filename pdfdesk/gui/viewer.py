@@ -9,22 +9,27 @@ from __future__ import annotations
 import pymupdf
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit
+from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit, QMenu
 
 from ..commands import edit as edit_cmds
+from ..commands.comment import text_between
 from ..commands import objects
 from ..commands import search
 
-RECT_TOOLS = {"select", "textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
+RECT_TOOLS = {"textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
               "digital-sign", "stamp", "image", "link", "field-text", "field-check", "field-radio", "field-combo",
               "field-list", "field-button", "field-sign"}
 LINE_TOOLS = {"line", "arrow", "callout"}
 MARKUP_TOOLS = {"highlight", "underline", "strikeout", "squiggly", "replace-text"}
+TEXT_TOOLS = MARKUP_TOOLS | {"select"}                         # drag selects along the text flow
+SEL_COLORS = {"select": QColor(40, 110, 255, 80), "highlight": QColor(255, 220, 0, 110),
+              "underline": QColor(0, 160, 0, 70), "strikeout": QColor(230, 30, 30, 70),
+              "squiggly": QColor(30, 80, 230, 70), "replace-text": QColor(230, 30, 30, 70)}
 POINT_TOOLS = {"note", "file", "typewriter", "add-text", "insert-text"}
 POLY_TOOLS = {"polygon", "cloud", "polyline"}
 INK_TOOLS = {"pencil"}
-CURSORS = {"hand": Qt.OpenHandCursor, "zoom": Qt.CrossCursor, "edit-text": Qt.IBeamCursor, "select": Qt.IBeamCursor,
-           "edit-object": Qt.ArrowCursor}
+CURSORS = {"hand": Qt.OpenHandCursor, "zoom": Qt.CrossCursor, "edit-text": Qt.IBeamCursor,
+           "edit-object": Qt.ArrowCursor, **{t: Qt.IBeamCursor for t in TEXT_TOOLS}}
 # comments whose box is their whole shape, so dragging a corner can resize them
 RESIZABLE_ANNOTS = {pymupdf.PDF_ANNOT_SQUARE, pymupdf.PDF_ANNOT_CIRCLE, pymupdf.PDF_ANNOT_FREE_TEXT,
                     pymupdf.PDF_ANNOT_STAMP}
@@ -53,7 +58,8 @@ class DocView(QAbstractScrollArea):
         self.obj_sel: tuple[int, int] | None = None           # (page index, object number) for Edit Object
         self._drag: dict | None = None                         # moving or resizing the selection
         self._objs: dict[int, list] = {}                       # page index -> page objects, until the next edit
-        self.text_sel: tuple[int, pymupdf.Rect] | None = None
+        self.text_sel: tuple[int, pymupdf.Point, pymupdf.Point] | None = None     # page index, start, stop
+        self._words: dict[int, list] = {}                      # page index -> words, until the next edit
         self._cache: dict[tuple, QImage] = {}
         self._press = None                                     # (page index, pdf point, view pos)
         self._cur = None                                       # current view pos while dragging
@@ -61,6 +67,7 @@ class DocView(QAbstractScrollArea):
         self._poly: tuple[int, list] | None = None
         self._ink: tuple[int, list] | None = None
         self._hover_line = None
+        self._announced = None
         self._editor: QLineEdit | None = None
         self._edit_target = None
         self.viewport().setStyleSheet("background:#6b6b6b")
@@ -119,6 +126,7 @@ class DocView(QAbstractScrollArea):
     def relayout(self):
         self._cache.clear()
         self._objs.clear()
+        self._words.clear()
         self.sizes = [(p.rect.width * self.zoom, p.rect.height * self.zoom) for p in self.doc]
         self.tops, y = [], self.GAP
         for _, h in self.sizes:
@@ -127,6 +135,7 @@ class DocView(QAbstractScrollArea):
         self.total = y
         self.verticalScrollBar().setSingleStep(40)
         self._update_bars()
+        self._announce()
         self.viewport().update()
 
     def _update_bars(self):
@@ -223,14 +232,20 @@ class DocView(QAbstractScrollArea):
                 p.fillRect(self.page_rect_to_view(i, r), QColor(255, 220, 0, 110))
         self._paint_overlays(p)
         p.end()
-        self.pageChanged.emit(self.current_page())
+
+    def _announce(self):
+        """Tell the window the current page, only when it or the zoom changed. Never from paintEvent: the
+        status bar update repaints the window, which repainted this view, in a loop."""
+        now = (self.current_page(), self.zoom, len(self.sizes))
+        if now != self._announced:
+            self._announced = now
+            self.pageChanged.emit(now[0])
 
     def _paint_overlays(self, p: QPainter):
         if self.text_sel:
-            i, r = self.text_sel
-            for w in self.doc[i].get_text("words"):
-                if pymupdf.Rect(w[:4]).intersects(r):
-                    p.fillRect(self.page_rect_to_view(i, w[:4]), QColor(40, 110, 255, 80))
+            i, a, b = self.text_sel
+            for r, _t in self._text_between(i, a, b):
+                p.fillRect(self.page_rect_to_view(i, r), SEL_COLORS["select"])
         sel = self._selection()
         if sel:
             i, rect, resizable = sel
@@ -257,7 +272,10 @@ class DocView(QAbstractScrollArea):
             p.setPen(pen)
             if self.tool in RECT_TOOLS:
                 p.drawRect(self.page_rect_to_view(i, pymupdf.Rect(start, cur).normalize()))
-            elif self.tool in LINE_TOOLS or self.tool in MARKUP_TOOLS:
+            elif self.tool in TEXT_TOOLS:
+                for r, _t in self._text_between(i, start, cur):
+                    p.fillRect(self.page_rect_to_view(i, r), SEL_COLORS[self.tool])
+            elif self.tool in LINE_TOOLS:
                 p.drawLine(self.page_point_to_view(i, start), self.page_point_to_view(i, cur))
         if self._poly:
             i, pts = self._poly
@@ -281,6 +299,7 @@ class DocView(QAbstractScrollArea):
     def scrollContentsBy(self, dx, dy):
         if self._editor is not None:
             self._commit_editor()
+        self._announce()
         self.viewport().update()
 
     def wheelEvent(self, e):
@@ -505,7 +524,7 @@ class DocView(QAbstractScrollArea):
         if t in INK_TOOLS:
             pass  # strokes collect until the user presses Enter or switches tool
         elif t == "select":
-            self.text_sel = (i, pymupdf.Rect(start, end).normalize()) if moved else None
+            self.text_sel = (i, start, end) if moved and self._text_between(i, start, end) else None
         elif t in RECT_TOOLS:
             self._emit(tool=t, page=page, point=start, rect=pymupdf.Rect(start, end).normalize() if moved else None)
         elif t in LINE_TOOLS:
@@ -567,8 +586,30 @@ class DocView(QAbstractScrollArea):
     def selected_text(self) -> str:
         if not self.text_sel:
             return ""
-        i, r = self.text_sel
-        return self.doc[i].get_textbox(r).strip()
+        return "\n".join(t for _r, t in self._text_between(*self.text_sel))
+
+    def _text_between(self, i: int, a, b):
+        if i not in self._words:
+            self._words[i] = self.doc[i].get_text("words")
+        return text_between(self.doc[i], a, b, self._words[i])
+
+    def contextMenuEvent(self, e):
+        """Right-click on selected text: copy it or mark it up, like Foxit's selection menu."""
+        if not self.text_sel:
+            return super().contextMenuEvent(e)
+        i, a, b = self.text_sel
+        m = QMenu(self)
+        m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
+        m.addSeparator()
+        for label, tool in (("Highlight", "highlight"), ("Underline", "underline"), ("Strikeout", "strikeout"),
+                            ("Squiggly", "squiggly"), ("Replace Text…", "replace-text")):
+            m.addAction(label, lambda t=tool: self._mark_selection(t))
+        m.exec(e.globalPos())
+
+    def _mark_selection(self, tool: str):
+        i, a, b = self.text_sel
+        self.text_sel = None
+        self._emit(tool=tool, page=i + 1, start=a, stop=b)
 
     # ---- inline text editor (Edit Text tool) -------------------------------------------------------------
     def _open_editor(self, i: int, ln):
