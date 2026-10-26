@@ -1,7 +1,7 @@
 """Document security that survives saving.
 
 PyMuPDF (2.0 / MuPDF 1.28) drops encryption on any full save or tobytes(), even with PDF_ENCRYPT_KEEP,
-and once tobytes() has run, incremental saves drop it too. So pdfdesk keeps the security settings next to the document and applies
+and once tobytes() has run, incremental saves drop it too (and can drop other changes, see save()). So pdfdesk keeps the security settings next to the document and applies
 them on every full save. When the settings are not fully known (file opened with only one of its two
 passwords), saving asks instead of silently writing an unprotected file.
 """
@@ -88,15 +88,43 @@ def restricted(doc: pymupdf.Document, auth: int) -> bool:
     return bool(doc.metadata.get("encryption")) and not (auth & 4) and not (doc.permissions & pymupdf.PDF_PERM_MODIFY)
 
 
+def _fingerprint(doc: pymupdf.Document) -> list:
+    """What each page shows: its dictionary (contents, resources, annotations) and its content bytes."""
+    out = []
+    for p in doc:
+        out.append((doc.xref_object(p.xref, compressed=True), p.read_contents()))
+    return out
+
+
 def save(doc: pymupdf.Document, path: str, security: Security | None, incremental: bool) -> pymupdf.Document:
-    """Save and return the document to keep working on (reopened from disk after a full save)."""
-    # With known passwords, encrypted files get a full save: after doc.tobytes() (every undo checkpoint)
-    # MuPDF writes incremental updates unencrypted. Incremental is only for when a password is unknown.
-    full_known = security is not None and security.complete
-    if incremental and not full_known and doc.name == path and doc.can_save_incrementally():
+    """Save and return the document to keep working on (reopened from disk after a full save).
+
+    Normally a full save. MuPDF's incremental save is unreliable once doc.tobytes() has run (every undo
+    checkpoint does): it can leave out changed objects, e.g. a page's new /Contents array, which blanks the
+    page, and it drops encryption. So it is used only when a full save would do harm: on digitally signed
+    files (a full save breaks the signatures) or when a password is unknown. The result is then read back
+    and compared page by page; on any difference the file is restored and a full save is done instead.
+    """
+    signed = doc.is_pdf and doc.get_sigflags() > 0
+    unknown_pw = security is not None and not security.complete
+    if incremental and (signed or unknown_pw) and doc.name == path and doc.can_save_incrementally():
+        want = _fingerprint(doc)
+        with open(path, "rb") as f:
+            backup = f.read()
         doc.saveIncr()
-        return doc
-    if security is not None and not security.complete:
+        check = pymupdf.open(path)
+        still_encrypted = bool(check.needs_pass)
+        if still_encrypted and security is not None:
+            check.authenticate(security.owner_pw or security.user_pw or "")
+        ok = (security is None or still_encrypted) and _fingerprint(check) == want
+        check.close()
+        if ok:
+            return doc
+        with open(path, "wb") as f:          # the appended update was incomplete: put the file back
+            f.write(backup)
+        if unknown_pw:
+            raise PermissionError("could not save safely without both passwords")
+    if unknown_pw:
         raise PermissionError("security settings incomplete")
     kwargs = security.save_kwargs() if security else {"encryption": pymupdf.PDF_ENCRYPT_NONE}
     tmp = path + ".pdfdesk-tmp"
