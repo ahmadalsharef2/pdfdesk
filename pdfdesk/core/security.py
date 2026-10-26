@@ -1,7 +1,7 @@
 """Document security that survives saving.
 
-PyMuPDF (2.0 / MuPDF 1.28) drops encryption on any full save or tobytes(), even with PDF_ENCRYPT_KEEP;
-only incremental saves keep it. So pdfdesk keeps the security settings next to the document and applies
+PyMuPDF (2.0 / MuPDF 1.28) drops encryption on any full save or tobytes(), even with PDF_ENCRYPT_KEEP,
+and once tobytes() has run, incremental saves drop it too. So pdfdesk keeps the security settings next to the document and applies
 them on every full save. When the settings are not fully known (file opened with only one of its two
 passwords), saving asks instead of silently writing an unprotected file.
 """
@@ -90,7 +90,10 @@ def restricted(doc: pymupdf.Document, auth: int) -> bool:
 
 def save(doc: pymupdf.Document, path: str, security: Security | None, incremental: bool) -> pymupdf.Document:
     """Save and return the document to keep working on (reopened from disk after a full save)."""
-    if incremental and doc.name == path and doc.can_save_incrementally():
+    # With known passwords, encrypted files get a full save: after doc.tobytes() (every undo checkpoint)
+    # MuPDF writes incremental updates unencrypted. Incremental is only for when a password is unknown.
+    full_known = security is not None and security.complete
+    if incremental and not full_known and doc.name == path and doc.can_save_incrementally():
         doc.saveIncr()
         return doc
     if security is not None and not security.complete:

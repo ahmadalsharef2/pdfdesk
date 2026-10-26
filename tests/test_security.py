@@ -54,3 +54,15 @@ def test_remove_security(tmp_path):
     d.authenticate("o")
     sec.save(d, p, None, incremental=False)
     assert not pymupdf.open(p).needs_pass
+
+
+def test_save_after_tobytes_keeps_encryption(tmp_path):
+    p = str(tmp_path / "e.pdf")
+    _encrypted(p)
+    d = pymupdf.open(p)
+    s = sec.from_open(d, "o", d.authenticate("o"))
+    s.user_pw = "u"
+    d.tobytes()                      # what every undo checkpoint does
+    d[0].add_text_annot((50, 50), "note")
+    sec.save(d, p, s, incremental=True)
+    assert pymupdf.open(p).needs_pass

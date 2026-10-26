@@ -252,6 +252,18 @@ def set_text(doc, page, xref: int, text: str):
     return False
 
 
+@command("Comment.SetRect")
+def set_rect(doc, page, xref: int, rect):
+    """Resize a box-shaped comment (rectangle, oval, text box, stamp)."""
+    p = doc[page - 1]
+    for a in p.annots() or []:
+        if a.xref == xref:
+            a.set_rect(pymupdf.Rect(rect))
+            a.update()
+            return True
+    return False
+
+
 @command("Comment.Move")
 def move(doc, page, xref: int, dx: float, dy: float):
     p = doc[page - 1]
