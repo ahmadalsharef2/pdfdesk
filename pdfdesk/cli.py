@@ -3,11 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-
-import pymupdf
-
-from .commands import COMMANDS, run
 
 
 def _coerce(v: str):
@@ -20,6 +17,9 @@ def _coerce(v: str):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "run":
+        import pymupdf
+
+        from .commands import COMMANDS, run
         ap = argparse.ArgumentParser(prog="pdfdesk run")
         ap.add_argument("command", choices=sorted(COMMANDS) if COMMANDS else None)
         ap.add_argument("input", nargs="?")
@@ -33,8 +33,12 @@ def main(argv=None):
             out.save(args.output, garbage=4, deflate=True, clean=True)
         return 0
     if argv and argv[0] == "commands":
-        import pdfdesk.commands  # noqa
+        from .commands import COMMANDS
         print("\n".join(sorted(COMMANDS)))
+        return 0
+    from . import instance
+    files = [a for a in argv if a.lower().endswith(".pdf") and os.path.exists(a)]
+    if files and instance.hand_off(files):      # already running: open there, skip the slow start-up
         return 0
     from .gui.app import launch
     return launch(argv)

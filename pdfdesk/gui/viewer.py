@@ -12,6 +12,7 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, 
 from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit
 
 from ..commands import edit as edit_cmds
+from ..commands import objects
 from ..commands import search
 
 RECT_TOOLS = {"select", "textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
@@ -22,7 +23,12 @@ MARKUP_TOOLS = {"highlight", "underline", "strikeout", "squiggly", "replace-text
 POINT_TOOLS = {"note", "file", "typewriter", "add-text", "insert-text"}
 POLY_TOOLS = {"polygon", "cloud", "polyline"}
 INK_TOOLS = {"pencil"}
-CURSORS = {"hand": Qt.OpenHandCursor, "zoom": Qt.CrossCursor, "edit-text": Qt.IBeamCursor, "select": Qt.IBeamCursor}
+CURSORS = {"hand": Qt.OpenHandCursor, "zoom": Qt.CrossCursor, "edit-text": Qt.IBeamCursor, "select": Qt.IBeamCursor,
+           "edit-object": Qt.ArrowCursor}
+# comments whose box is their whole shape, so dragging a corner can resize them
+RESIZABLE_ANNOTS = {pymupdf.PDF_ANNOT_SQUARE, pymupdf.PDF_ANNOT_CIRCLE, pymupdf.PDF_ANNOT_FREE_TEXT,
+                    pymupdf.PDF_ANNOT_STAMP}
+HANDLE = 4                                                     # half size of a resize handle, in pixels
 
 
 class DocView(QAbstractScrollArea):
@@ -44,6 +50,9 @@ class DocView(QAbstractScrollArea):
         self.redo_stack: list[tuple[str, bytes]] = []
         self.highlights: dict[int, list[pymupdf.Rect]] = {}
         self.selected: tuple[int, int] | None = None          # (page index, annot xref)
+        self.obj_sel: tuple[int, int] | None = None           # (page index, object number) for Edit Object
+        self._drag: dict | None = None                         # moving or resizing the selection
+        self._objs: dict[int, list] = {}                       # page index -> page objects, until the next edit
         self.text_sel: tuple[int, pymupdf.Rect] | None = None
         self._cache: dict[tuple, QImage] = {}
         self._press = None                                     # (page index, pdf point, view pos)
@@ -74,7 +83,7 @@ class DocView(QAbstractScrollArea):
 
     def replace_doc(self, doc: pymupdf.Document):
         self.doc = doc
-        self.selected = None
+        self.selected = self.obj_sel = None
         self.text_sel = None
         self.highlights.clear()
         self.after_edit()
@@ -109,6 +118,7 @@ class DocView(QAbstractScrollArea):
     # ---- layout ------------------------------------------------------------------------------------
     def relayout(self):
         self._cache.clear()
+        self._objs.clear()
         self.sizes = [(p.rect.width * self.zoom, p.rect.height * self.zoom) for p in self.doc]
         self.tops, y = [], self.GAP
         for _, h in self.sizes:
@@ -221,13 +231,21 @@ class DocView(QAbstractScrollArea):
             for w in self.doc[i].get_text("words"):
                 if pymupdf.Rect(w[:4]).intersects(r):
                     p.fillRect(self.page_rect_to_view(i, w[:4]), QColor(40, 110, 255, 80))
-        if self.selected:
-            i, xref = self.selected
-            page = self.doc[i]
-            for a in page.annots() or []:
-                if a.xref == xref:
-                    p.setPen(QPen(QColor(30, 100, 255), 1.5, Qt.DashLine))
-                    p.drawRect(self.page_rect_to_view(i, a.rect + (-2, -2, 2, 2)))
+        sel = self._selection()
+        if sel:
+            i, rect, resizable = sel
+            if self._drag:
+                rect = self._drag["rect"]
+            r = self.page_rect_to_view(i, rect)
+            p.setPen(QPen(QColor(30, 100, 255), 1.5, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(r.adjusted(-2, -2, 2, 2))
+            if resizable:
+                p.setPen(QPen(QColor(30, 100, 255), 1))
+                p.setBrush(QColor(255, 255, 255))
+                for c in (r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()):
+                    p.drawRect(QRectF(c.x() - HANDLE, c.y() - HANDLE, 2 * HANDLE, 2 * HANDLE))
+                p.setBrush(Qt.NoBrush)
         if self._hover_line is not None and self.tool == "edit-text" and self._editor is None:
             i, rect = self._hover_line
             p.setPen(QPen(QColor(30, 100, 255), 1))
@@ -262,7 +280,7 @@ class DocView(QAbstractScrollArea):
 
     def scrollContentsBy(self, dx, dy):
         if self._editor is not None:
-            self._close_editor()
+            self._commit_editor()
         self.viewport().update()
 
     def wheelEvent(self, e):
@@ -273,8 +291,10 @@ class DocView(QAbstractScrollArea):
 
     # ---- tools ------------------------------------------------------------------------------------------------
     def set_tool(self, tool: str):
-        self._close_editor()
-        self._press = self._poly = self._ink = None
+        self._commit_editor()
+        self._press = self._poly = self._ink = self._drag = None
+        if tool != "edit-object":
+            self.obj_sel = None
         self.tool = tool
         self.viewport().setCursor(CURSORS.get(tool, Qt.CrossCursor))
         self.viewport().update()
@@ -282,12 +302,103 @@ class DocView(QAbstractScrollArea):
     def _emit(self, **kw):
         self.toolAction.emit(kw)
 
+    # ---- selection: comments (Hand) and page objects (Edit Object) ---------------------------------------
+    def _selection(self):
+        """(page index, rect, resizable) of the selected comment or object, or None."""
+        if self.obj_sel:
+            i, n = self.obj_sel
+            o = next((o for o in self.page_objects(i) if o.index == n), None)
+            return (i, o.rect, True) if o else None
+        if self.selected:
+            i, xref = self.selected
+            page = self.doc[i]                  # keep the page alive while its annotations are used
+            for a in page.annots() or []:
+                if a.xref == xref:
+                    return i, pymupdf.Rect(a.rect), a.type[0] in RESIZABLE_ANNOTS
+        return None
+
+    def _handle_at(self, pos):
+        """Corner under the mouse ("tl", "tr", "bl", "br") of a resizable selection."""
+        sel = self._selection()
+        if not sel or not sel[2]:
+            return None
+        r = self.page_rect_to_view(sel[0], sel[1])
+        for name, c in (("tl", r.topLeft()), ("tr", r.topRight()), ("bl", r.bottomLeft()), ("br", r.bottomRight())):
+            if abs(pos.x() - c.x()) <= HANDLE + 2 and abs(pos.y() - c.y()) <= HANDLE + 2:
+                return name
+        return None
+
+    def _start_drag(self, mode: str, pos, corner: str | None = None):
+        i, rect, _ = self._selection()
+        _j, pt = self.view_to_page(pos, clamp_page=i)
+        self._drag = {"mode": mode, "corner": corner, "page": i, "start": pt, "orig": pymupdf.Rect(rect),
+                      "rect": pymupdf.Rect(rect), "pos": pos, "keep_ratio": self.obj_sel is not None}
+
+    def _update_drag(self, pos):
+        d = self._drag
+        _j, pt = self.view_to_page(pos, clamp_page=d["page"])
+        o = d["orig"]
+        if d["mode"] == "move":
+            dx, dy = pt.x - d["start"].x, pt.y - d["start"].y
+            d["rect"] = o + (dx, dy, dx, dy)
+        else:
+            # the opposite corner stays put
+            fx, fy = (o.x1 if "l" in d["corner"] else o.x0), (o.y1 if "t" in d["corner"] else o.y0)
+            w, h = max(abs(pt.x - fx), 4), max(abs(pt.y - fy), 4)
+            if d["keep_ratio"] and o.width and o.height:
+                k = max(w / o.width, h / o.height)
+                w, h = o.width * k, o.height * k
+            x0 = fx - w if "l" in d["corner"] else fx
+            y0 = fy - h if "t" in d["corner"] else fy
+            d["rect"] = pymupdf.Rect(x0, y0, x0 + w, y0 + h)
+        self.viewport().update()
+
+    def _finish_drag(self, pos):
+        d, self._drag = self._drag, None
+        moved = abs(pos.x() - d["pos"].x()) + abs(pos.y() - d["pos"].y()) > 3
+        if not moved:
+            self.viewport().update()
+            return
+        page = d["page"] + 1
+        if self.obj_sel:
+            self._emit(tool="object-rect", page=page, index=self.obj_sel[1], rect=d["rect"])
+        elif d["mode"] == "move":
+            o, r = d["orig"], d["rect"]
+            self._emit(tool="move-annot", page=page, xref=self.selected[1], dx=r.x0 - o.x0, dy=r.y0 - o.y0)
+        else:
+            self._emit(tool="annot-rect", page=page, xref=self.selected[1], rect=d["rect"])
+
+    def page_objects(self, i: int) -> list:
+        if i not in self._objs:
+            self._objs[i] = objects.list_objects(self.doc, i + 1)
+        return self._objs[i]
+
+    def _object_at(self, i: int, point):
+        pt = pymupdf.Point(point)
+        hits = [o for o in self.page_objects(i) if (o.rect + (-2, -2, 2, 2)).contains(pt)]
+        return min(hits, key=lambda o: o.rect.get_area()) if hits else None
+
+    def select_object_at(self, i: int, point) -> bool:
+        o = self._object_at(i, point)
+        self.obj_sel = (i, o.index) if o else None
+        self.viewport().update()
+        return o is not None
+
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return super().mousePressEvent(e)
         pos = e.position()
         i, pt = self.view_to_page(pos)
         self.setFocus()
+        if self.tool in ("hand", "edit-object"):
+            corner = self._handle_at(pos)
+            if corner:
+                self._start_drag("resize", pos, corner)
+                return
+        if self.tool == "edit-object":
+            if i is not None and self.select_object_at(i, pt):
+                self._start_drag("move", pos)
+            return
         if self.tool == "hand":
             if i is not None:
                 w = next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None)
@@ -298,7 +409,7 @@ class DocView(QAbstractScrollArea):
                 xref = annot_at(self.doc, i + 1, pt)
                 self.selected = (i, xref) if xref else None
                 if xref:
-                    self._press = (i, pt, pos)
+                    self._start_drag("move", pos)
                     self.viewport().update()
                     return
             self._pan = (pos, self.horizontalScrollBar().value(), self.verticalScrollBar().value())
@@ -311,6 +422,7 @@ class DocView(QAbstractScrollArea):
             self.set_zoom(self.zoom / 1.25 if e.modifiers() & Qt.ShiftModifier else self.zoom * 1.25)
             return
         if self.tool == "edit-text":
+            self._commit_editor()           # clicking elsewhere keeps the edit, like Foxit
             ln = edit_cmds.line_at(self.doc, i + 1, pt)
             if ln:
                 self._open_editor(i, ln)
@@ -334,6 +446,16 @@ class DocView(QAbstractScrollArea):
 
     def mouseMoveEvent(self, e):
         pos = e.position()
+        if self._drag:
+            self._update_drag(pos)
+            return
+        if self.tool in ("hand", "edit-object") and not self._pan:
+            corner = self._handle_at(pos)
+            if corner:
+                self.viewport().setCursor(Qt.SizeFDiagCursor if corner in ("tl", "br") else Qt.SizeBDiagCursor)
+            else:
+                self.viewport().setCursor(Qt.SizeAllCursor if self.tool == "edit-object" and self._over_object(pos)
+                                          else CURSORS.get(self.tool, Qt.CrossCursor))
         if self._pan:
             start, hx, vy = self._pan
             self.horizontalScrollBar().setValue(int(hx - (pos.x() - start.x())))
@@ -357,10 +479,17 @@ class DocView(QAbstractScrollArea):
         if self._press or self._poly:
             self.viewport().update()
 
+    def _over_object(self, pos) -> bool:
+        i, pt = self.view_to_page(pos)
+        return i is not None and self._object_at(i, pt) is not None
+
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.LeftButton:
             return
         pos = e.position()
+        if self._drag:
+            self._finish_drag(pos)
+            return
         if self._pan:
             self._pan = None
             self.viewport().setCursor(CURSORS.get(self.tool, Qt.CrossCursor))
@@ -373,11 +502,7 @@ class DocView(QAbstractScrollArea):
         self._press, self._cur = None, None
         page = i + 1
         t = self.tool
-        if t == "hand" and self.selected:
-            if moved:
-                self._emit(tool="move-annot", page=page, xref=self.selected[1], dx=end.x - start.x,
-                           dy=end.y - start.y)
-        elif t in INK_TOOLS:
+        if t in INK_TOOLS:
             pass  # strokes collect until the user presses Enter or switches tool
         elif t == "select":
             self.text_sel = (i, pymupdf.Rect(start, end).normalize()) if moved else None
@@ -416,6 +541,11 @@ class DocView(QAbstractScrollArea):
         self.viewport().update()
 
     def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.obj_sel:
+            i, n = self.obj_sel
+            self.obj_sel = None
+            self._emit(tool="delete-object", page=i + 1, index=n)
+            return
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.selected:
             i, xref = self.selected
             self.selected = None
@@ -425,8 +555,8 @@ class DocView(QAbstractScrollArea):
             self.finish_shape()
             return
         if e.key() == Qt.Key_Escape:
-            self._poly = self._ink = self._press = None
-            self.selected = self.text_sel = None
+            self._poly = self._ink = self._press = self._drag = None
+            self.selected = self.text_sel = self.obj_sel = None
             self.viewport().update()
             return
         if e.matches(QKeySequence.StandardKey.Copy) and self.text_sel:
@@ -442,7 +572,7 @@ class DocView(QAbstractScrollArea):
 
     # ---- inline text editor (Edit Text tool) -------------------------------------------------------------
     def _open_editor(self, i: int, ln):
-        self._close_editor()
+        self._commit_editor()
         ed = QLineEdit(self.viewport())
         ed.setText(ln.text)
         f = QFont()
@@ -451,7 +581,7 @@ class DocView(QAbstractScrollArea):
         r = self.page_rect_to_view(i, ln.rect)
         ed.setGeometry(int(r.x()) - 2, int(r.y()) - 2, max(int(r.width()) + 60, 120), int(r.height()) + 6)
         ed.setStyleSheet("background:#fffbe6;border:1px solid #1e64ff;")
-        ed.returnPressed.connect(self._commit_editor)
+        ed.editingFinished.connect(self._commit_editor)     # Enter or focus moving away; Esc cancels
         ed.show()
         ed.setFocus()
         ed.selectAll()

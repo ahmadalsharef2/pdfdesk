@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap,
+                           QPolygonF)
 
 ACCENT = "#6b2d7b"      # purple, like the File tab
 BLUE, RED, GREEN, ORANGE, GRAY, YELLOW = "#2b6cc4", "#d33a3a", "#2e9e5b", "#e8872a", "#6b6f76", "#f1c40f"
@@ -15,7 +16,7 @@ GLYPHS = {
     "highlight": ("H", YELLOW), "underline": ("U", GREEN), "strikeout": ("S", RED), "squiggly": ("~", BLUE),
     "replace-text": ("R", ORANGE), "note": ("🗒", YELLOW), "file": ("📎", GRAY), "typewriter": ("T", BLUE),
     "textbox": ("A", BLUE), "callout": ("💬", BLUE), "stamp": ("★", RED), "pencil": ("✎", ORANGE),
-    "edit-text": ("T", BLUE), "add-text": ("T+", BLUE), "image": ("🖼", GREEN), "replace": ("⇄", BLUE),
+    "edit-text": ("T", BLUE), "edit-object": ("⬚", BLUE), "add-text": ("T+", BLUE), "image": ("🖼", GREEN), "replace": ("⇄", BLUE),
     "properties": ("ⓘ", GRAY), "sign": ("✍", BLUE), "sign-place": ("✍", BLUE), "digital-sign": ("🔏", GREEN),
     "certify": ("✔", GREEN), "validate": ("✔", GREEN), "id": ("🪪", GRAY), "redact": ("▮", RED),
     "whiteout": ("▯", GRAY), "apply": ("✔", RED), "search-redact": ("🔍", RED), "pattern": ("#", RED),
@@ -72,10 +73,7 @@ SHAPES = {"rectangle", "oval", "line", "arrow", "polygon", "polyline", "cloud"}
 _cache: dict[tuple, QIcon] = {}
 
 
-def icon(kind: str, size: int = 32) -> QIcon:
-    key = (kind, size)
-    if key in _cache:
-        return _cache[key]
+def _draw(kind: str, size: int) -> QPixmap:
     ratio = 2
     pm = QPixmap(size * ratio, size * ratio)
     pm.setDevicePixelRatio(ratio)
@@ -98,9 +96,40 @@ def icon(kind: str, size: int = 32) -> QIcon:
         p.setPen(c.darker(115))
         p.drawText(r, Qt.AlignCenter, glyph)
     p.end()
-    ic = QIcon(pm)
-    _cache[key] = ic
-    return ic
+    return pm
+
+
+class _LazyIcon(QIconEngine):
+    """Draws the icon the first time it is shown. Emoji glyphs are slow to draw (colour-emoji font), and
+    most ribbon icons sit on tabs that are never opened, so drawing them all up front slowed start-up."""
+
+    def __init__(self, kind: str, size: int):
+        super().__init__()
+        self.kind, self.size, self.pm = kind, size, None
+
+    def _pixmap(self) -> QPixmap:
+        if self.pm is None:
+            self.pm = _draw(self.kind, self.size)
+        return self.pm
+
+    def paint(self, painter, rect, mode, state):
+        painter.drawPixmap(rect, self._pixmap())
+
+    def pixmap(self, size, mode, state):
+        pm = self._pixmap().scaled(size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if mode == QIcon.Disabled:
+            return QIcon(pm).pixmap(size, QIcon.Disabled)   # let Qt grey it out
+        return pm
+
+    def clone(self):
+        return _LazyIcon(self.kind, self.size)
+
+
+def icon(kind: str, size: int = 32) -> QIcon:
+    key = (kind, size)
+    if key not in _cache:
+        _cache[key] = QIcon(_LazyIcon(kind, size))
+    return _cache[key]
 
 
 # App icon: a page resting on a desk. Teal and amber, kept clear of the red/orange of other PDF tools.

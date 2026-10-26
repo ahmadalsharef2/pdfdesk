@@ -32,7 +32,8 @@ NOT_YET = {"Share": "Email, shared review and cloud drives",
            "Connect": "Connected services", "Accessibility": "Accessibility check and tagging"}
 
 TOOL_HINTS = {
-    "hand": "Hand: drag to scroll, click a comment to select it (Delete removes it, double-click edits)",
+    "hand": "Hand: drag to scroll; click a comment to select it, drag to move, drag a corner to resize "
+            "(Delete removes it, double-click edits)",
     "select": "Select: drag over text, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
@@ -45,7 +46,8 @@ TOOL_HINTS = {
     "cloud": "Cloud: click points, double-click or Enter to finish",
     "polyline": "Polyline: click points, double-click or Enter to finish",
     "pencil": "Pencil: draw, press Enter to finish", "stamp": "Stamp: drag a box",
-    "edit-text": "Edit text: click a line of text, change it, press Enter",
+    "edit-text": "Edit text: click a line of text and change it; click elsewhere or press Enter to keep it",
+    "edit-object": "Edit object: click an image or signature; drag to move, drag a corner to resize, Delete removes it",
     "add-text": "Add text: click where the text goes", "image": "Add image: drag a box",
     "redact": "Mark for redaction: drag over text or images", "whiteout": "Whiteout: drag over what to erase",
     "sign-place": "Place signature: click or drag a box", "digital-sign": "Digital signature: drag a box",
@@ -391,7 +393,7 @@ class Main(QMainWindow):
                                  S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
         G("Home", "Find", [L("Advanced Search", "search-folder", self.folder_search)])
         G("Home", "Create", [L("From File", "create", self.create_from_file), L("Combine", "combine", self.combine_files)])
-        G("Home", "Edit", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text")])
+        G("Home", "Edit", [TL("Edit Text", "edit-text"), TL("Edit Object", "edit-object"), TL("Add Text", "add-text")])
         G("Home", "Review", [stack(self.TS("Highlight", "highlight"), self.TS("Note", "note"),
                                    self.TS("Typewriter", "typewriter"))])
         G("Home", "Protect", [L("Sign", "sign", lambda: self.set_tool("sign-place")),
@@ -414,7 +416,8 @@ class Main(QMainWindow):
 
         # Edit
         self.tools_group("Edit")
-        G("Edit", "Content", [TL("Edit Text", "edit-text"), TL("Add Text", "add-text"), TL("Add Image", "image")])
+        G("Edit", "Content", [TL("Edit Text", "edit-text"), TL("Edit Object", "edit-object"), TL("Add Text", "add-text"),
+                              TL("Add Image", "image")])
         G("Edit", "Find", [L("Replace", "replace", self.find_replace)])
         G("Edit", "Links", [TL("Link", "link"), stack(S("Create from URLs", "link", lambda: self._count(
                                 "Create links", lambda d: run("Links.Detect", d), "link(s) created")),
@@ -425,7 +428,8 @@ class Main(QMainWindow):
         # Fill & Sign
         self.tools_group("Fill & Sign")
         G("Fill & Sign", "Sign", [L("Create Signature", "sign", self.create_signature),
-                                  TL("Place Signature", "sign-place", "sign"), self._saved_sig_menu()])
+                                  TL("Place Signature", "sign-place", "sign"), self._saved_sig_menu(),
+                                  L("Signer Details", "id", lambda: dialogs.SignerDialog.ask(self, self.author))])
         G("Fill & Sign", "Fill", [TL("Add Text", "add-text")])
 
         # Organize
@@ -547,7 +551,8 @@ class Main(QMainWindow):
         if not v:
             return
         t, page = a["tool"], a.get("page")
-        if t in ("move-annot", "delete-annot", "edit-annot", "edit-text-commit", "sign-place") or t not in (
+        if t in ("move-annot", "delete-annot", "edit-annot", "edit-text-commit", "sign-place", "annot-rect",
+                 "object-rect", "delete-object") or t not in (
                 "select", "hand", "zoom"):
             if getattr(v, "readonly", False):
                 return self.error("Read only", "This document was opened with its user password and does not "
@@ -556,6 +561,12 @@ class Main(QMainWindow):
         try:
             if t == "delete-annot":
                 return self.apply("Delete comment", lambda d: run("Comment.Delete", d, page, a["xref"]))
+            if t == "annot-rect":
+                return self.apply("Resize comment", lambda d: run("Comment.SetRect", d, page, a["xref"], a["rect"]))
+            if t == "object-rect":
+                return self.apply("Move object", lambda d: run("Object.Transform", d, page, a["index"], a["rect"]))
+            if t == "delete-object":
+                return self.apply("Delete object", lambda d: run("Object.Delete", d, page, a["index"]))
             if t == "move-annot":
                 return self.apply("Move comment", lambda d: run("Comment.Move", d, page, a["xref"], a["dx"], a["dy"]))
             if t == "edit-annot":
@@ -634,14 +645,13 @@ class Main(QMainWindow):
         rect = a["rect"] or pymupdf.Rect(a["point"].x - 80, a["point"].y - 25, a["point"].x + 80, a["point"].y + 25)
 
         def go(d):
-            if s["kind"] == "typed":
-                run("Sign.Typed", d, page, rect, s["name"])
-            elif s["kind"] == "image":
-                run("Sign.Image", d, page, rect, path=s["path"])
-            else:
-                from ..commands import sign
-                run("Sign.Ink", d, page, sign.fit_strokes(s["strokes"], s["size"], rect))
-        self.apply("Signature", go)
+            from ..commands import sign
+            return run("Sign.Place", d, page, rect, s, sign.caption_lines(dialogs.signer_profile()))
+        placed = self.apply("Signature", go)
+        if placed is not None:          # select it, so it can be moved or resized right away
+            self.set_tool("edit-object")
+            self.cur().select_object_at(page - 1, placed.tl + (placed.br - placed.tl) / 2)
+            self.msg("Signature placed. Drag to move it, drag a corner to resize, Delete removes it.", 8000)
 
     # ---- applying edits ----------------------------------------------------------------------------
     def apply(self, label: str, fn):
@@ -777,6 +787,7 @@ class Main(QMainWindow):
         return bool(p) and self._save_to(v, p, incremental=False)
 
     def _save_to(self, v: DocView, path: str, incremental: bool) -> bool:
+        v._commit_editor()          # a text edit still open in the page counts
         s = v.security
         try:
             if s is not None and not s.complete:
@@ -1418,4 +1429,15 @@ def launch(argv):
         if a.lower().endswith(".pdf") and os.path.exists(a):
             w.open_path(a)
     w.show()
+
+    def open_handed(paths):
+        for p in paths:
+            if os.path.exists(p):
+                w.open_path(p)
+        if w.isMinimized():
+            w.showNormal()
+        w.raise_()
+        w.activateWindow()
+    from .. import instance
+    w._instance_server = instance.serve(open_handed)
     return app.exec()

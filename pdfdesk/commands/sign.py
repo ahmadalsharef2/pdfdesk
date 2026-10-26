@@ -56,6 +56,68 @@ def ink(doc, page: int, strokes, color=(0, 0, 0.55), width: float = 1.8):
     sh.commit()
 
 
+CAPTION_FIELDS = ("name", "position", "company", "email", "phone", "address", "date")
+
+
+def caption_lines(profile: dict, today: dt.date | None = None) -> list[str]:
+    """Signer details -> caption lines. profile: {field: value, ..., "show": [fields], "layout": ...};
+    "date" needs no value, it is the signing date. Layout "lines" (default): one detail per line;
+    "compact": two lines, who (name, position, company) and contact (email, phone, address, date)."""
+    show = set(profile.get("show", ()))
+    val = {k: (profile.get(k) or "").strip() for k in CAPTION_FIELDS}
+    val["date"] = (today or dt.date.today()).isoformat()
+    if profile.get("layout") == "compact":
+        groups = (("name", "position", "company"), ("email", "phone", "address", "date"))
+    else:
+        groups = tuple((k,) for k in CAPTION_FIELDS)
+    lines = [" · ".join(val[k] for k in g if k in show and val[k]) for g in groups]
+    return [ln for ln in lines if ln]
+
+
+@command("Sign.Caption")
+def caption(doc, page: int, rect, lines: list[str], color=(0.4, 0.4, 0.4), max_size: float = 7.0):
+    """A hairline under the signature box and small grey detail lines below it, as page content."""
+    p = doc[page - 1]
+    r = pymupdf.Rect(rect)
+    if not lines:
+        return None
+    ff = fonts.unicode_font()
+    p.insert_font(fontname="sigcap", fontfile=ff)
+    f = pymupdf.Font(fontfile=ff)
+    widest = max(f.text_length(ln, 1) for ln in lines)
+    size = max(5.0, min(max_size, r.width / max(1e-3, widest)))   # shrink to the box, but stay readable
+    p.draw_line((r.x0, r.y1), (r.x1, r.y1), color=color, width=0.4)
+    y = r.y1 + size * 1.25
+    x0, x1 = r.x0, r.x1
+    for ln in lines:
+        x = r.x0 + (r.width - f.text_length(ln, size)) / 2
+        p.insert_text((x, y), ln, fontname="sigcap", fontsize=size, color=color)
+        x0, x1 = min(x0, x), max(x1, x + f.text_length(ln, size))
+        y += size * 1.25
+    return pymupdf.Rect(x0, r.y1, x1, y - size)   # down to the last line's descenders; wider if text overflows
+
+
+@command("Sign.Place")
+def place(doc, page: int, rect, spec: dict, lines: list[str] | None = None):
+    """Fill & Sign: the signature (typed, ink or image spec) and its caption, placed as one object on the
+    page, so Edit Object can move or resize it later. Returns the object's box."""
+    r = pymupdf.Rect(rect)
+    pad = 150                                            # room for a caption wider than the signature
+    tmp = pymupdf.open()
+    tmp.new_page(width=r.width + 2 * pad, height=r.height + 120)
+    box = pymupdf.Rect(pad, 0, pad + r.width, r.height)
+    if spec["kind"] == "typed":
+        typed(tmp, 1, box, spec["name"])
+    elif spec["kind"] == "image":
+        image(tmp, 1, box, path=spec.get("path"), data=spec.get("data"))
+    else:
+        ink(tmp, 1, fit_strokes(spec["strokes"], spec["size"], box))
+    clip = box | caption(tmp, 1, box, lines) if lines else box
+    target = pymupdf.Rect(clip.x0 - pad + r.x0, r.y0, clip.x1 - pad + r.x0, r.y0 + clip.height)
+    doc[page - 1].show_pdf_page(target, tmp, 0, clip=clip)
+    return target
+
+
 def fit_strokes(strokes, src_size, rect):
     """Scale strokes drawn on a canvas of src_size=(w,h) into rect, keeping aspect ratio."""
     r = pymupdf.Rect(rect)

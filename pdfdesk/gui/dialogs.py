@@ -18,6 +18,7 @@ from ..core import fonts
 DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "pdfdesk"
 IDS = DATA / "ids"
 SIGS = DATA / "signatures.json"
+SIGNER = DATA / "signer.json"
 
 
 def _buttons(dlg: QDialog, layout):
@@ -94,6 +95,70 @@ class DrawPad(QWidget):
                 p.drawPath(path)
 
 
+class SignerDetails(QGroupBox):
+    """Signer profile: one checkbox + text per detail; checked ones go in the caption under the signature."""
+    LABELS = {"name": "Full name", "position": "Position", "company": "Company", "email": "Email",
+              "phone": "Phone", "address": "Address", "date": "Date (signing day)"}
+
+    def __init__(self, default_name: str = ""):
+        super().__init__("Details under the signature")
+        prof = signer_profile()
+        prof.setdefault("name", default_name)
+        show = set(prof.get("show", ()))
+        g = QGridLayout(self)
+        self.checks, self.edits = {}, {}
+        for i, (k, label) in enumerate(self.LABELS.items()):
+            self.checks[k] = QCheckBox(label, checked=k in show)
+            g.addWidget(self.checks[k], i, 0)
+            if k != "date":
+                self.edits[k] = QLineEdit(prof.get(k, ""))
+                self.edits[k].textEdited.connect(lambda _t, c=self.checks[k]: c.setChecked(True))
+                g.addWidget(self.edits[k], i, 1)
+        self.layout_box = QComboBox()
+        self.layout_box.addItem("One detail per line", "lines")
+        self.layout_box.addItem("Compact: two lines", "compact")
+        self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(prof.get("layout", "lines"))))
+        g.addWidget(QLabel("Layout"), len(self.LABELS), 0)
+        g.addWidget(self.layout_box, len(self.LABELS), 1)
+        g.setColumnStretch(1, 1)
+
+    def profile(self) -> dict:
+        prof = {k: e.text().strip() for k, e in self.edits.items()}
+        prof["show"] = [k for k, c in self.checks.items() if c.isChecked()]
+        prof["layout"] = self.layout_box.currentData()
+        return prof
+
+
+def signer_profile() -> dict:
+    """Default: no caption; contact details are only shown when the user ticks them."""
+    try:
+        return json.loads(SIGNER.read_text())
+    except (OSError, ValueError):
+        return {"show": []}
+
+
+def save_signer_profile(prof: dict):
+    SIGNER.parent.mkdir(parents=True, exist_ok=True)
+    SIGNER.write_text(json.dumps(prof))
+    os.chmod(SIGNER, 0o600)
+
+
+class SignerDialog(QDialog):
+    def __init__(self, parent, default_name: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Signer Details")
+        v = QVBoxLayout(self)
+        self.details = SignerDetails(default_name)
+        v.addWidget(self.details)
+        _buttons(self, v)
+
+    @staticmethod
+    def ask(parent, default_name=""):
+        d = SignerDialog(parent, default_name)
+        if d.exec() == QDialog.Accepted:
+            save_signer_profile(d.details.profile())
+
+
 class SignatureDialog(QDialog):
     """Create a Fill & Sign signature: typed, drawn or from an image. Returns a spec dict."""
 
@@ -147,6 +212,8 @@ class SignatureDialog(QDialog):
         il.addWidget(pick, alignment=Qt.AlignRight)
         self.tabs.addTab(iw, "Image")
         v.addWidget(self.tabs)
+        self.details = SignerDetails(default_name)
+        v.addWidget(self.details)
         self.save = QCheckBox("Save this signature for next time", checked=True)
         v.addWidget(self.save)
         _buttons(self, v)
@@ -173,6 +240,7 @@ class SignatureDialog(QDialog):
         while d.exec() == QDialog.Accepted:
             s = d.spec()
             if s:
+                save_signer_profile(d.details.profile())
                 if d.save.isChecked():
                     save_signature(s)
                 return s
