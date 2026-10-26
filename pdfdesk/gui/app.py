@@ -34,7 +34,7 @@ NOT_YET = {"Share": "Email, shared review and cloud drives",
 TOOL_HINTS = {
     "hand": "Hand: drag to scroll; click a comment to select it, drag to move, drag a corner to resize "
             "(Delete removes it, double-click edits)",
-    "select": "Select: drag over text, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
+    "select": "Select: drag over text; right-click to highlight, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
     "replace-text": "Replace text: drag across the text to replace", "area-highlight": "Area highlight: drag",
@@ -47,7 +47,7 @@ TOOL_HINTS = {
     "polyline": "Polyline: click points, double-click or Enter to finish",
     "pencil": "Pencil: draw, press Enter to finish", "stamp": "Stamp: drag a box",
     "edit-text": "Edit text: click a line of text and change it; click elsewhere or press Enter to keep it",
-    "edit-object": "Edit object: click an image or signature; drag to move, drag a corner to resize, Delete removes it",
+    "edit-object": "Edit object: click text, a shape, an image or a signature; drag to move, drag a corner to resize, Delete removes it",
     "add-text": "Add text: click where the text goes", "image": "Add image: drag a box",
     "redact": "Mark for redaction: drag over text or images", "whiteout": "Whiteout: drag over what to erase",
     "sign-place": "Place signature: click or drag a box", "digital-sign": "Digital signature: drag a box",

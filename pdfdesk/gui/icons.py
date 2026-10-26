@@ -1,6 +1,9 @@
 """Icons drawn in code (no image files): simple, flat, one accent colour per command family."""
 from __future__ import annotations
 
+import hashlib
+import os
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap,
                            QPolygonF)
@@ -99,6 +102,27 @@ def _draw(kind: str, size: int) -> QPixmap:
     return pm
 
 
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "pdfdesk", "icons")
+
+
+def _cached(kind: str, size: int) -> QPixmap:
+    """_draw, kept on disk: the first emoji drawn makes Qt search every system font for a colour-emoji one,
+    which froze the first window paint for over a second on every launch."""
+    key = hashlib.md5(repr((kind, size, GLYPHS.get(kind), kind in SHAPES)).encode()).hexdigest()[:10]
+    path = os.path.join(CACHE, f"{kind}-{size}-{key}.png")
+    pm = QPixmap(path) if os.path.exists(path) else QPixmap()
+    if not pm.isNull():
+        pm.setDevicePixelRatio(2)
+        return pm
+    pm = _draw(kind, size)
+    try:
+        os.makedirs(CACHE, exist_ok=True)
+        pm.save(path, "PNG")
+    except OSError:
+        pass
+    return pm
+
+
 class _LazyIcon(QIconEngine):
     """Draws the icon the first time it is shown. Emoji glyphs are slow to draw (colour-emoji font), and
     most ribbon icons sit on tabs that are never opened, so drawing them all up front slowed start-up."""
@@ -109,7 +133,7 @@ class _LazyIcon(QIconEngine):
 
     def _pixmap(self) -> QPixmap:
         if self.pm is None:
-            self.pm = _draw(self.kind, self.size)
+            self.pm = _cached(self.kind, self.size)
         return self.pm
 
     def paint(self, painter, rect, mode, state):
