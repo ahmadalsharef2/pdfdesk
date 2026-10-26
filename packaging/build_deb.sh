@@ -11,7 +11,9 @@ cp -r dist/pdfdesk "$root/opt/pdfdesk"
 ln -s /opt/pdfdesk/pdfdesk "$root/usr/bin/pdfdesk"
 cp packaging/pdfdesk.desktop "$root/usr/share/applications/"
 mkdir -p "$root/usr/share/icons/hicolor/scalable/apps"
-python -c "from pdfdesk.gui.icons import APP_SVG; print(APP_SVG, end='')" > "$root/usr/share/icons/hicolor/scalable/apps/pdfdesk.svg"
+# read APP_SVG from the source without importing Qt (CI runners may lack libEGL)
+python -c "import ast; t = ast.parse(open('pdfdesk/gui/icons.py').read()); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') == 'APP_SVG'), end='')" \
+  > "$root/usr/share/icons/hicolor/scalable/apps/pdfdesk.svg"
 cat > "$root/DEBIAN/control" <<CTRL
 Package: pdfdesk
 Version: $version
