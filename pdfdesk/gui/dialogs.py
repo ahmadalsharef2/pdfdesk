@@ -6,12 +6,12 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QSettings, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
-                               QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import QPointF, QSettings, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from ..core import fonts
 
@@ -57,6 +57,134 @@ class TextDialog(QDialog):
             return None
         t = d.edit.toPlainText().rstrip("\n")
         return (t, d.size.value()) if size is not None else t
+
+
+# ---- colors and comment properties --------------------------------------------------------------------
+PRESET_COLORS = [("Yellow", (1, 0.85, 0)), ("Green", (0.3, 0.85, 0.3)), ("Cyan", (0.3, 0.8, 1)),
+                 ("Pink", (1, 0.45, 0.75)), ("Orange", (1, 0.6, 0.1)), ("Red", (0.9, 0.1, 0.1)),
+                 ("Blue", (0.1, 0.3, 0.9)), ("Purple", (0.55, 0.25, 0.85)), ("Gray", (0.5, 0.5, 0.5)),
+                 ("Black", (0, 0, 0)), ("White", (1, 1, 1))]
+
+
+def qcolor(rgb) -> QColor:
+    return QColor.fromRgbF(*rgb) if rgb else QColor(0, 0, 0, 0)
+
+
+def swatch(rgb, size: int = 16) -> QIcon:
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setPen(QColor(110, 110, 110))
+    p.setBrush(qcolor(rgb) if rgb else Qt.NoBrush)
+    p.drawRect(0, 0, size - 1, size - 1)
+    if not rgb:                                                 # "no color": a red slash
+        p.setPen(QPen(QColor(220, 30, 30), 1.5))
+        p.drawLine(1, size - 2, size - 2, 1)
+    p.end()
+    return QIcon(pm)
+
+
+def fill_color_menu(m: QMenu, pick, current=None, none_label: str | None = None):
+    """Preset swatches, "More colors…" and optionally a "no color" entry; pick(rgb or None) on choice."""
+    if none_label:
+        m.addAction(swatch(None), none_label, lambda: pick(None))
+    for name, rgb in PRESET_COLORS:
+        m.addAction(swatch(rgb), name, lambda c=rgb: pick(c))
+
+    def more():
+        c = QColorDialog.getColor(qcolor(current) if current else QColor(255, 220, 0), m.parentWidget(), "Color")
+        if c.isValid():
+            pick((c.redF(), c.greenF(), c.blueF()))
+    m.addAction("More colors…", more)
+
+
+class ColorButton(QToolButton):
+    """A swatch that opens the color menu."""
+    changed = Signal(object)            # rgb tuple, or None for "no color"
+
+    def __init__(self, rgb=None, none_label: str | None = None, text: str = ""):
+        super().__init__()
+        self.rgb = rgb
+        self.setPopupMode(QToolButton.InstantPopup)
+        if text:
+            self.setText(text)
+            self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        m = QMenu(self)
+        m.aboutToShow.connect(lambda: (m.clear(), fill_color_menu(m, self.set_color, self.rgb, none_label)))
+        self.setMenu(m)
+        self._show()
+
+    def set_color(self, rgb, emit: bool = True):
+        self.rgb = tuple(rgb) if rgb else None
+        self._show()
+        if emit:
+            self.changed.emit(self.rgb)
+
+    def _show(self):
+        self.setIcon(swatch(self.rgb, 18))
+
+
+class CommentPropertiesDialog(QDialog):
+    """Text and appearance of one comment; shows only what that kind of comment has (Comment.Style fields)."""
+
+    def __init__(self, parent, st: dict):
+        super().__init__(parent)
+        self.st = st
+        self.setWindowTitle(f"{st['type']} properties")
+        v = QVBoxLayout(self)
+        f = QFormLayout()
+        fields = st["fields"]
+        self.text = QPlainTextEdit(st["content"])
+        self.text.setMinimumSize(360, 90)
+        f.addRow("Text:" if st["type"] == "FreeText" else "Comment:", self.text)
+        self.color = self.text_color = self.fill = self.width = self.size = None
+        if "color" in fields:
+            self.color = ColorButton(st["color"])
+            f.addRow("Color:", self.color)
+        if "text_color" in fields:
+            self.text_color = ColorButton(st["text_color"])
+            f.addRow("Text color:", self.text_color)
+        if "fontsize" in fields:
+            self.size = QDoubleSpinBox(minimum=4, maximum=144, value=st["fontsize"], decimals=1)
+            f.addRow("Font size:", self.size)
+        if "fill" in fields:
+            self.fill = ColorButton(st["fill"], none_label="No fill")
+            f.addRow("Fill:", self.fill)
+        if "width" in fields:
+            self.width = QDoubleSpinBox(minimum=0, maximum=20, value=st["width"], singleStep=0.5, decimals=1)
+            f.addRow("Line width:", self.width)
+        self.opacity = QSpinBox(minimum=5, maximum=100, value=round(st["opacity"] * 100), suffix=" %")
+        f.addRow("Opacity:", self.opacity)
+        v.addLayout(f)
+        _buttons(self, v)
+
+    def changes(self) -> dict:
+        """Only what was changed, as Comment.SetStyle keyword arguments."""
+        st, out = self.st, {}
+        text = self.text.toPlainText().rstrip("\n")
+        if text != st["content"]:
+            out["text"] = text
+        for key, w in (("color", self.color), ("text_color", self.text_color), ("fill", self.fill)):
+            if w is not None and not _same(w.rgb, st.get(key)):
+                out[key] = w.rgb
+        for key, w in (("fontsize", self.size), ("width", self.width)):
+            if w is not None and abs(w.value() - st[key]) > 1e-3:
+                out[key] = w.value()
+        if self.opacity.value() != round(st["opacity"] * 100):
+            out["opacity"] = self.opacity.value() / 100
+        return out
+
+    @staticmethod
+    def ask(parent, st: dict) -> dict | None:
+        d = CommentPropertiesDialog(parent, st)
+        d.text.setFocus()
+        return d.changes() if d.exec() == QDialog.Accepted else None
+
+
+def _same(a, b) -> bool:
+    if not a or not b:
+        return not a and not b
+    return all(abs(x - y) < 2 / 255 for x, y in zip(a, b))
 
 
 # ---- signatures ----------------------------------------------------------------------------------------

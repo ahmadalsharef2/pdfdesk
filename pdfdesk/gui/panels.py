@@ -149,11 +149,27 @@ class Bookmarks(QTreeWidget):
 
 
 class Comments(QListWidget):
+    """Comments of the document; click to show one, double-click or right-click to change or delete it."""
     activated = Signal(int, int)  # page index, xref
+    command = Signal(str, int, int)  # "properties" or "delete", page index, xref
 
     def __init__(self):
         super().__init__()
         self.itemClicked.connect(lambda it: self.activated.emit(*it.data(ROLE)))
+        self.itemDoubleClicked.connect(lambda it: self.command.emit("properties", *it.data(ROLE)))
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+
+    def _menu(self, pos):
+        it = self.itemAt(pos)
+        if it is None:
+            return
+        m = QMenu(self)
+        m.addAction("Go to", lambda: self.activated.emit(*it.data(ROLE)))
+        m.addAction("Properties…", lambda: self.command.emit("properties", *it.data(ROLE)))
+        m.addSeparator()
+        m.addAction("Delete", lambda: self.command.emit("delete", *it.data(ROLE)))
+        m.exec(self.viewport().mapToGlobal(pos))
 
     def set_document(self, doc):
         self.clear()
