@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import getpass
 import glob
+import json
 import os
 import subprocess
 import sys
 import tempfile
 
 import pymupdf
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QListWidget, QMainWindow, QMessageBox, QSpinBox, QSplitter, QStackedWidget,
@@ -33,7 +34,7 @@ NOT_YET = {"Share": "Email, shared review and cloud drives",
 
 TOOL_HINTS = {
     "hand": "Hand: drag to scroll; click a comment to select it, drag to move, drag a corner to resize "
-            "(Delete removes it, double-click edits)",
+            "(Delete removes it, double-click or right-click to change its color, size and text)",
     "select": "Select: drag over text; right-click to highlight, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
@@ -80,6 +81,9 @@ class Main(QMainWindow):
         self.stamp_name = "Approved"
         self.sig_spec: dict | None = None
         self.tool_buttons: dict[str, list[QToolButton]] = {}
+        self.tool_colors: dict[str, tuple] = {k: tuple(c) for k, c in
+                                              json.loads(QSettings("pdfdesk", "pdfdesk").value("tool_colors", "{}")).items()}
+        self.color_buttons: list[dialogs.ColorButton] = []
 
         self.ribbon = Ribbon()
         self.find_box = self.ribbon.find
@@ -156,6 +160,9 @@ class Main(QMainWindow):
         self.bookmarks.activated_page.connect(lambda i: self.cur() and self.cur().goto(i))
         self.bookmarks.command.connect(self.bookmark_command)
         self.comments.activated.connect(self._focus_comment)
+        self.comments.command.connect(self._comment_command)
+        self.docs.tabBar().setContextMenuPolicy(Qt.CustomContextMenu)
+        self.docs.tabBar().customContextMenuRequested.connect(self._tab_menu)
         self.thumbs.reordered.connect(self._reorder)
         self.thumbs.pageCommand.connect(self._page_command)
         self._build_ribbon()
@@ -395,7 +402,7 @@ class Main(QMainWindow):
         G("Home", "Create", [L("From File", "create", self.create_from_file), L("Combine", "combine", self.combine_files)])
         G("Home", "Edit", [TL("Edit Text", "edit-text"), TL("Edit Object", "edit-object"), TL("Add Text", "add-text")])
         G("Home", "Review", [stack(self.TS("Highlight", "highlight"), self.TS("Note", "note"),
-                                   self.TS("Typewriter", "typewriter"))])
+                                   self.TS("Typewriter", "typewriter")), stack(self._color_button())])
         G("Home", "Protect", [L("Sign", "sign", lambda: self.set_tool("sign-place")),
                               stack(S("Mark Redaction", "redact", lambda: self.set_tool("redact")),
                                     S("Apply", "apply", self.apply_redactions))])
@@ -462,6 +469,7 @@ class Main(QMainWindow):
         G("Comment", "Drawing", [grid([TI("Rectangle", "rectangle"), TI("Oval", "oval"), TI("Line", "line"),
                                        TI("Arrow", "arrow"), TI("Polygon", "polygon"), TI("Cloud", "cloud"),
                                        TI("Polyline", "polyline"), TI("Pencil", "pencil")], 4)])
+        G("Comment", "Color", [stack(self._color_button())])
         stamp = QComboBox()
         stamp.addItems(STAMPS)
         stamp.setFixedWidth(120)
@@ -534,12 +542,79 @@ class Main(QMainWindow):
         self.set_tool("sign-place")
         self.msg("Click or drag on the page to place: " + dialogs.describe_signature(s))
 
+    # ---- comment colors ---------------------------------------------------------------------------------
+    def _color_button(self):
+        b = dialogs.ColorButton(text="Color")
+        b.setToolTip("Color of new comments made with the current tool (Highlight when no comment tool is on)")
+        b.setFixedHeight(22)
+        b.changed.connect(self.set_tool_color)
+        self.color_buttons.append(b)
+        return b
+
+    def _color_tool(self) -> str:
+        return self.tool if self.tool in comment_cmds.DEFAULT_COLORS else "highlight"
+
+    def set_tool_color(self, rgb):
+        t = self._color_tool()
+        if rgb:
+            self.tool_colors[t] = tuple(rgb)
+        QSettings("pdfdesk", "pdfdesk").setValue("tool_colors", json.dumps(self.tool_colors))
+        self._show_tool_color()
+        if self.cur():
+            self.cur().viewport().update()
+        self.msg(f"New {t.replace('-', ' ')} comments use this color")
+
+    def _show_tool_color(self):
+        t = self._color_tool()
+        rgb = self.tool_colors.get(t) or comment_cmds.DEFAULT_COLORS[t]
+        for b in self.color_buttons:
+            b.set_color(rgb, emit=False)
+            b.setText(f"{t.replace('-', ' ').capitalize()} color")
+
+    def comment_properties(self, page: int, xref: int):
+        v = self.cur()
+        r = dialogs.CommentPropertiesDialog.ask(self, run("Comment.Style", v.doc, page, xref))
+        if r:
+            self.apply("Comment properties", lambda d: run("Comment.SetStyle", d, page, xref, **r))
+
+    def _comment_command(self, name: str, page0: int, xref: int):
+        v = self.cur()
+        if not v:
+            return
+        self._focus_comment(page0, xref)
+        if name == "properties":
+            self.comment_properties(page0 + 1, xref)
+        elif name == "delete":
+            v.selected = None
+            self.apply("Delete comment", lambda d: run("Comment.Delete", d, page0 + 1, xref))
+
+    def _tab_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        i = self.docs.tabBar().tabAt(pos)
+        v = self.docs.widget(i)
+        if not isinstance(v, DocView):
+            return
+        self.docs.setCurrentIndex(i)
+        m = QMenu(self)
+        m.addAction("Save", self.save)
+        m.addAction("Save As…", self.save_as)
+        if v.path:
+            m.addAction("Copy file path", lambda: QApplication.clipboard().setText(v.path))
+            m.addAction("Open containing folder", lambda: subprocess.Popen(["xdg-open", os.path.dirname(v.path)]))
+        m.addSeparator()
+        m.addAction("Close", lambda: self.close_tab(self.docs.indexOf(v)))
+        m.addAction("Close other tabs", lambda: [self.close_tab(self.docs.indexOf(w)) for w in
+                                                  [self.docs.widget(k) for k in range(self.docs.count())]
+                                                  if isinstance(w, DocView) and w is not v])
+        m.exec(self.docs.tabBar().mapToGlobal(pos))
+
     # ---- tools ----------------------------------------------------------------------------------------
     def set_tool(self, tool: str):
         self.tool = tool
         for name, buttons in self.tool_buttons.items():
             for b in buttons:
                 b.setChecked(name == tool)
+        self._show_tool_color()
         for i in range(self.docs.count()):
             w = self.docs.widget(i)
             if isinstance(w, DocView):
@@ -551,13 +626,19 @@ class Main(QMainWindow):
         if not v:
             return
         t, page = a["tool"], a.get("page")
+        if t == "set-tool":
+            return self.set_tool(a["name"])
+        if t == "page-command":
+            return self._page_command(a["name"], a["pages"])
         if t in ("move-annot", "delete-annot", "edit-annot", "edit-text-commit", "sign-place", "annot-rect",
-                 "object-rect", "delete-object") or t not in (
+                 "object-rect", "delete-object", "annot-style") or t not in (
                 "select", "hand", "zoom"):
             if getattr(v, "readonly", False):
                 return self.error("Read only", "This document was opened with its user password and does not "
                                   "allow changes. Open it with the permissions password to edit.")
         au = self.author
+        col = a.get("color") or self.tool_colors.get(t)
+        cw = {"color": col} if col else {}
         try:
             if t == "delete-annot":
                 return self.apply("Delete comment", lambda d: run("Comment.Delete", d, page, a["xref"]))
@@ -570,25 +651,25 @@ class Main(QMainWindow):
             if t == "move-annot":
                 return self.apply("Move comment", lambda d: run("Comment.Move", d, page, a["xref"], a["dx"], a["dy"]))
             if t == "edit-annot":
-                old = next((c["content"] for c in run("Comment.List", v.doc) if c["xref"] == a["xref"]), "")
-                r = dialogs.TextDialog.ask(self, "Edit comment", "Comment text:", old)
-                return r is not None and self.apply("Edit comment", lambda d: run("Comment.SetText", d, page, a["xref"], r))
+                return self.comment_properties(page, a["xref"])
+            if t == "annot-style":
+                return self.apply("Comment properties", lambda d: run("Comment.SetStyle", d, page, a["xref"], **a["style"]))
             if t in ("highlight", "underline", "strikeout", "squiggly"):
                 name = {"highlight": "Highlight", "underline": "Underline", "strikeout": "Strikeout",
                         "squiggly": "Squiggly"}[t]
-                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au))
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au, **cw))
             if t == "replace-text":
                 r = dialogs.TextDialog.ask(self, "Replace text", "Replacement text:")
                 return r and self.apply("Replace text", lambda d: run("Comment.ReplaceText", d, page, a["start"], a["stop"], r, author=au))
             if t == "note":
                 r = dialogs.TextDialog.ask(self, "Note", "Note text:")
-                return r and self.apply("Note", lambda d: run("Comment.Note", d, page, a["point"], r, author=au))
+                return r and self.apply("Note", lambda d: run("Comment.Note", d, page, a["point"], r, author=au, **cw))
             if t == "file":
                 p = QFileDialog.getOpenFileName(self, "Attach file")[0]
                 return p and self.apply("Attach file", lambda d: run("Comment.File", d, page, a["point"], p, author=au))
             if t == "typewriter":
                 r = dialogs.TextDialog.ask(self, "Typewriter", "Text:", size=12)
-                return r and self.apply("Typewriter", lambda d: run("Comment.Typewriter", d, page, a["point"], r[0], fontsize=r[1], author=au))
+                return r and self.apply("Typewriter", lambda d: run("Comment.Typewriter", d, page, a["point"], r[0], fontsize=r[1], author=au, **cw))
             if t == "add-text":
                 r = dialogs.TextDialog.ask(self, "Add text", "Text:", size=12)
                 return r and self.apply("Add text", lambda d: run("Text.Add", d, page, a["point"], r[0], fontsize=r[1]))
@@ -601,15 +682,15 @@ class Main(QMainWindow):
                 return r and self.apply("Callout", lambda d: run("Comment.Callout", d, page, a["start"], box, r, author=au))
             if t in ("rectangle", "oval", "area-highlight") and a["rect"]:
                 name = {"rectangle": "Rectangle", "oval": "Oval", "area-highlight": "AreaHighlight"}[t]
-                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["rect"], author=au))
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["rect"], author=au, **cw))
             if t in ("line", "arrow"):
                 name = "Line" if t == "line" else "Arrow"
-                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au))
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au, **cw))
             if t in ("polygon", "cloud", "polyline"):
                 name = {"polygon": "Polygon", "cloud": "Cloud", "polyline": "Polyline"}[t]
-                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["points"], author=au))
+                return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["points"], author=au, **cw))
             if t == "pencil":
-                return self.apply("Pencil", lambda d: run("Comment.Pencil", d, page, a["strokes"], author=au))
+                return self.apply("Pencil", lambda d: run("Comment.Pencil", d, page, a["strokes"], author=au, **cw))
             if t == "stamp" and a["rect"]:
                 return self.apply("Stamp", lambda d: run("Comment.Stamp", d, page, a["rect"], self.stamp_name, author=au))
             if t == "redact" and a["rect"]:
@@ -696,6 +777,7 @@ class Main(QMainWindow):
 
     # ---- open / save / close -----------------------------------------------------------------------------
     def _wire(self, v: DocView):
+        v.tool_colors = self.tool_colors
         v.toolAction.connect(self.on_tool)
         v.pageChanged.connect(lambda n: self._status())
         v.changed.connect(self._title)

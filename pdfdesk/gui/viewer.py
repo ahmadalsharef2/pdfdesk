@@ -12,9 +12,11 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, 
 from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit, QMenu
 
 from ..commands import edit as edit_cmds
-from ..commands.comment import text_between
+from ..commands.comment import DEFAULT_COLORS, annot_at, text_between
+from ..commands.comment import style as comment_style
 from ..commands import objects
 from ..commands import search
+from .dialogs import fill_color_menu, qcolor, swatch
 
 RECT_TOOLS = {"textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
               "digital-sign", "stamp", "image", "link", "field-text", "field-check", "field-radio", "field-combo",
@@ -51,6 +53,7 @@ class DocView(QAbstractScrollArea):
         self.zoom = 1.0
         self.modified = False
         self.tool = "hand"
+        self.tool_colors: dict[str, tuple] = {}               # the window's color choices, shared by all views
         self.undo_stack: list[tuple[str, bytes]] = []
         self.redo_stack: list[tuple[str, bytes]] = []
         self.highlights: dict[int, list[pymupdf.Rect]] = {}
@@ -274,7 +277,7 @@ class DocView(QAbstractScrollArea):
                 p.drawRect(self.page_rect_to_view(i, pymupdf.Rect(start, cur).normalize()))
             elif self.tool in TEXT_TOOLS:
                 for r, _t in self._text_between(i, start, cur):
-                    p.fillRect(self.page_rect_to_view(i, r), SEL_COLORS[self.tool])
+                    p.fillRect(self.page_rect_to_view(i, r), self._preview(self.tool))
             elif self.tool in LINE_TOOLS:
                 p.drawLine(self.page_point_to_view(i, start), self.page_point_to_view(i, cur))
         if self._poly:
@@ -424,7 +427,6 @@ class DocView(QAbstractScrollArea):
                 if w is not None:
                     self._emit(tool="fill-field", page=i + 1, xref=w.xref)
                     return
-                from ..commands.comment import annot_at
                 xref = annot_at(self.doc, i + 1, pt)
                 self.selected = (i, xref) if xref else None
                 if xref:
@@ -560,15 +562,8 @@ class DocView(QAbstractScrollArea):
         self.viewport().update()
 
     def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.obj_sel:
-            i, n = self.obj_sel
-            self.obj_sel = None
-            self._emit(tool="delete-object", page=i + 1, index=n)
-            return
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.selected:
-            i, xref = self.selected
-            self.selected = None
-            self._emit(tool="delete-annot", page=i + 1, xref=xref)
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and (self.obj_sel or self.selected):
+            self._delete_selected()
             return
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and (self._poly or self._ink):
             self.finish_shape()
@@ -593,23 +588,144 @@ class DocView(QAbstractScrollArea):
             self._words[i] = self.doc[i].get_text("words")
         return text_between(self.doc[i], a, b, self._words[i])
 
+    # ---- right-click menus ----------------------------------------------------------------------------------
     def contextMenuEvent(self, e):
-        """Right-click on selected text: copy it or mark it up, like Foxit's selection menu."""
-        if not self.text_sel:
-            return super().contextMenuEvent(e)
-        i, a, b = self.text_sel
+        """What the menu offers depends on what is under the mouse: selected text, a comment, an object (Edit
+        Object), a form field, or the page itself."""
+        pos = QPointF(e.pos())
+        i, pt = self.view_to_page(pos)
+        if self._editor is not None or self._poly or self._ink:
+            return
         m = QMenu(self)
-        m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
-        m.addSeparator()
-        for label, tool in (("Highlight", "highlight"), ("Underline", "underline"), ("Strikeout", "strikeout"),
-                            ("Squiggly", "squiggly"), ("Replace Text…", "replace-text")):
-            m.addAction(label, lambda t=tool: self._mark_selection(t))
+        if self.text_sel and self._on_text_sel(pos):
+            self._text_menu(m)
+        elif i is None:
+            return
+        elif xref := annot_at(self.doc, i + 1, pt):
+            self.obj_sel, self.selected = None, (i, xref)
+            self._annot_menu(m, i, xref)
+        elif self.tool == "edit-object" and self.select_object_at(i, pt):
+            self._object_menu(m, i)
+        elif w := next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None):
+            m.addAction("Fill in…", lambda x=w.xref: self._emit(tool="fill-field", page=i + 1, xref=x))
+        else:
+            self._page_menu(m, i, pt)
+        self.viewport().update()
         m.exec(e.globalPos())
 
-    def _mark_selection(self, tool: str):
+    def _on_text_sel(self, pos) -> bool:
+        i, a, b = self.text_sel
+        return any(self.page_rect_to_view(i, r).adjusted(-4, -4, 4, 4).contains(pos)
+                   for r, _t in self._text_between(i, a, b))
+
+    def _text_menu(self, m: QMenu):
+        m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
+        m.addSeparator()
+        m.addAction(swatch(self.color_for("highlight")), "Highlight", lambda: self._mark_selection("highlight"))
+        fill_color_menu(m.addMenu("Highlight in"), lambda c: self._mark_selection("highlight", c),
+                        self.color_for("highlight"))
+        for label, tool in (("Underline", "underline"), ("Strikeout", "strikeout"), ("Squiggly", "squiggly"),
+                            ("Replace Text…", "replace-text")):
+            m.addAction(label, lambda t=tool: self._mark_selection(t))
+
+    def _annot_menu(self, m: QMenu, i: int, xref: int):
+        st = comment_style(self.doc, i + 1, xref)
+        restyle = lambda **kw: self._emit(tool="annot-style", page=i + 1, xref=xref, style=kw)
+        m.addAction("Properties…", lambda: self._emit(tool="edit-annot", page=i + 1, xref=xref))
+        for key, label in (("color", "Color"), ("text_color", "Text color")):
+            if key in st["fields"]:
+                fill_color_menu(m.addMenu(swatch(st[key]), label), lambda c, k=key: restyle(**{k: c}), st[key])
+        if "fill" in st["fields"]:
+            fill_color_menu(m.addMenu(swatch(st["fill"]), "Fill"), lambda c: restyle(fill=c), st["fill"], "No fill")
+        if "fontsize" in st["fields"]:
+            sz = m.addMenu("Font size")
+            for n in (8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48):
+                a = sz.addAction(str(n), lambda n=n: restyle(fontsize=n))
+                a.setCheckable(True)
+                a.setChecked(abs(st["fontsize"] - n) < 0.05)
+        if "width" in st["fields"]:
+            wm = m.addMenu("Line width")
+            for n in (0.5, 1, 1.5, 2, 3, 4, 6):
+                a = wm.addAction(f"{n:g} pt", lambda n=n: restyle(width=n))
+                a.setCheckable(True)
+                a.setChecked(abs(st["width"] - n) < 0.05)
+        om = m.addMenu("Opacity")
+        for n in (100, 75, 50, 25):
+            a = om.addAction(f"{n} %", lambda n=n: restyle(opacity=n / 100))
+            a.setCheckable(True)
+            a.setChecked(round(st["opacity"] * 100) == n)
+        if st["content"]:
+            m.addAction("Copy text", lambda: QGuiApplication.clipboard().setText(st["content"]))
+        m.addSeparator()
+        m.addAction("Delete", lambda: self._delete_selected())
+
+    def _object_menu(self, m: QMenu, i: int):
+        n = self.obj_sel[1]
+        o = next(o for o in self.page_objects(i) if o.index == n)
+        if o.kind == "text":
+            text = self.doc[i].get_text(clip=o.rect + (-1, -1, 1, 1)).strip()
+            m.addAction("Copy text", lambda: QGuiApplication.clipboard().setText(text))
+            m.addAction("Edit text", lambda: self._emit(tool="set-tool", name="edit-text"))
+        m.addSeparator()
+        m.addAction("Delete", lambda: self._delete_selected())
+
+    def _page_menu(self, m: QMenu, i: int, pt):
+        page = i + 1
+        if self.text_sel:
+            m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
+        m.addAction("Select all text on this page", lambda: self.select_page_text(i))
+        m.addSeparator()
+        for label, tool in (("Hand", "hand"), ("Select Text", "select"), ("Edit Object", "edit-object")):
+            a = m.addAction(label, lambda t=tool: self._emit(tool="set-tool", name=t))
+            a.setCheckable(True)
+            a.setChecked(self.tool == tool)
+        m.addSeparator()
+        m.addAction("Add note here…", lambda: self._emit(tool="note", page=page, point=pt))
+        m.addAction("Add typewriter text here…", lambda: self._emit(tool="typewriter", page=page, point=pt))
+        m.addAction("Add text here…", lambda: self._emit(tool="add-text", page=page, point=pt))
+        m.addSeparator()
+        m.addAction("Zoom in", lambda: self.set_zoom(self.zoom * 1.25))
+        m.addAction("Zoom out", lambda: self.set_zoom(self.zoom / 1.25))
+        m.addAction("Fit width", self.fit_width)
+        m.addAction("Fit page", self.fit_page)
+        m.addSeparator()
+        pg = m.addMenu(f"Page {page}")
+        for label, name in (("Rotate right", "rotate-right"), ("Rotate left", "rotate-left"),
+                            ("Insert blank page after", "insert-blank"), ("Duplicate", "duplicate"),
+                            ("Extract…", "extract"), ("Delete", "delete")):
+            pg.addAction(label, lambda n=name: self._emit(tool="page-command", name=n, pages=[i]))
+
+    def _delete_selected(self):
+        if self.obj_sel:
+            (i, n), self.obj_sel = self.obj_sel, None
+            self._emit(tool="delete-object", page=i + 1, index=n)
+        elif self.selected:
+            (i, xref), self.selected = self.selected, None
+            self._emit(tool="delete-annot", page=i + 1, xref=xref)
+
+    def select_page_text(self, i: int):
+        if i not in self._words:
+            self._words[i] = self.doc[i].get_text("words")
+        w = self._words[i]
+        if w:
+            self.text_sel = (i, pymupdf.Point(w[0][:2]), pymupdf.Point(w[-1][2:4]))
+            self.viewport().update()
+
+    def _mark_selection(self, tool: str, color=None):
         i, a, b = self.text_sel
         self.text_sel = None
-        self._emit(tool=tool, page=i + 1, start=a, stop=b)
+        self._emit(tool=tool, page=i + 1, start=a, stop=b, **({"color": color} if color else {}))
+
+    def color_for(self, tool: str):
+        """The color new comments of this tool get: the user's choice, else the tool's default."""
+        return self.tool_colors.get(tool) or DEFAULT_COLORS.get(tool)
+
+    def _preview(self, tool: str) -> QColor:
+        if tool == "select" or not self.color_for(tool):
+            return SEL_COLORS[tool]
+        c = qcolor(self.color_for(tool))
+        c.setAlpha(110 if tool == "highlight" else 70)
+        return c
 
     # ---- inline text editor (Edit Text tool) -------------------------------------------------------------
     def _open_editor(self, i: int, ln):

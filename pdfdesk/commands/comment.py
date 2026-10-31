@@ -2,11 +2,18 @@
 pages are 1-based. Every function returns the created annotation's xref."""
 from __future__ import annotations
 
+import html
+import re
+
 import pymupdf
 
 from .registry import command
 
 YELLOW, RED, BLUE = (1, 0.85, 0), (0.9, 0.1, 0.1), (0.1, 0.3, 0.9)
+# the color each GUI tool gives a new comment unless the user picks another (typewriter: its text color)
+DEFAULT_COLORS = {"highlight": YELLOW, "area-highlight": YELLOW, "underline": (0, 0.6, 0), "strikeout": RED,
+                  "squiggly": BLUE, "note": YELLOW, "typewriter": (0, 0, 0),
+                  **{t: RED for t in ("rectangle", "oval", "line", "arrow", "polygon", "cloud", "polyline", "pencil")}}
 
 
 def _finish(annot, author: str | None, content: str | None = None, color=None, fill=None, width=None,
@@ -150,12 +157,19 @@ def _rich(text: str) -> str:
     return "".join(f"<p>{ln or '&#160;'}</p>" for ln in esc.split("\n"))
 
 
+def _rich_body(text: str) -> str:
+    """A whole RC value, as MuPDF writes it, for replacing a text box's text."""
+    return ('<?xml version="1.0"?><body xmlns="http://www.w3.org/1999/xtml" '
+            'xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/" xfa:contentType="text/html" '
+            f'xfa:APIVersion="Acrobat:8.0.0" xfa:spec="2.4">{_rich(text)}</body>')
+
+
 @command("Comment.Textbox")
 def textbox(doc, page, rect, text: str, fontsize=11, author=None, border=RED, fill=(1, 1, 1)):
     a = (p := doc[page - 1]).add_freetext_annot(pymupdf.Rect(rect), _rich(text), fontsize=fontsize,
                                                 text_color=(0, 0, 0), border_color=border, fill_color=fill,
                                                 border_width=1, richtext=True)
-    return _finish(a, author)
+    return _finish(a, author, text)
 
 
 @command("Comment.Callout")
@@ -169,7 +183,7 @@ def callout(doc, page, target, rect, text: str, fontsize=11, author=None, border
                                                 border_color=border, fill_color=(1, 1, 1), border_width=1,
                                                 callout=(t, knee, edge), line_end=pymupdf.PDF_ANNOT_LE_OPEN_ARROW,
                                                 richtext=True)
-    return _finish(a, author)
+    return _finish(a, author, text)
 
 
 # ---- drawing --------------------------------------------------------------------------------------
@@ -278,6 +292,113 @@ def set_text(doc, page, xref: int, text: str):
             a.update()
             return True
     return False
+
+
+# ---- appearance -------------------------------------------------------------------------------------
+# which properties each kind of comment has; everything also has text and opacity
+_A = pymupdf
+STYLE_FIELDS = {
+    **{t: ("color",) for t in (_A.PDF_ANNOT_HIGHLIGHT, _A.PDF_ANNOT_UNDERLINE, _A.PDF_ANNOT_STRIKE_OUT,
+                               _A.PDF_ANNOT_SQUIGGLY, _A.PDF_ANNOT_TEXT, _A.PDF_ANNOT_FILE_ATTACHMENT,
+                               _A.PDF_ANNOT_CARET)},
+    **{t: ("color", "fill", "width") for t in (_A.PDF_ANNOT_SQUARE, _A.PDF_ANNOT_CIRCLE, _A.PDF_ANNOT_POLYGON)},
+    **{t: ("color", "width") for t in (_A.PDF_ANNOT_LINE, _A.PDF_ANNOT_POLY_LINE, _A.PDF_ANNOT_INK)},
+    # MuPDF draws a text box border in black whatever is asked, so only its width is offered
+    _A.PDF_ANNOT_FREE_TEXT: ("text_color", "fontsize", "fill", "width"),
+    _A.PDF_ANNOT_STAMP: (),
+}
+
+
+def _annot(doc, page, xref):
+    p = doc[page - 1]
+    for a in p.annots() or []:
+        if a.xref == xref:
+            return p, a
+    raise ValueError(f"no comment {xref} on page {page}")
+
+
+def _font_style(doc, xref) -> tuple[float, tuple]:
+    """Font size and text color of a FreeText: its DS style when it has one (rich text), else its DA."""
+    size, color = 12.0, (0.0, 0.0, 0.0)
+    kind, ds = doc.xref_get_key(xref, "DS")
+    if kind == "string":
+        for item in ds.split(";"):
+            k, _, v = item.partition(":")
+            k, v = k.strip(), v.strip()
+            if k == "font-size" and v:
+                size = float(v.rstrip("pt"))
+            elif k == "color" and v.startswith("#") and len(v) == 7:
+                color = tuple(int(v[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        return size, color
+    kind, da = doc.xref_get_key(xref, "DA")
+    toks = da.split() if kind == "string" else []
+    for k, t in enumerate(toks):
+        if t == "Tf" and k >= 1:
+            size = float(toks[k - 1])
+        elif t == "rg" and k >= 3:
+            color = tuple(float(x) for x in toks[k - 3:k])
+        elif t == "g" and k >= 1:
+            color = (float(toks[k - 1]),) * 3
+    return size, color
+
+
+@command("Comment.Style")
+def style(doc, page, xref: int) -> dict:
+    """The comment's text and appearance, with "fields" naming the properties it has."""
+    _p, a = _annot(doc, page, xref)
+    t = a.type[0]
+    c = a.colors
+    content = a.info.get("content", "")
+    if not content and doc.xref_get_key(xref, "RC")[0] == "string":     # text boxes from older versions keep only RC
+        content = "\n".join(html.unescape(re.sub(r"<[^>]+>", "", m)).replace("\xa0", "")
+                            for m in re.findall(r"<p[^>]*>(.*?)</p>", doc.xref_get_key(xref, "RC")[1], re.S))
+    out = {"type": a.type[1], "fields": STYLE_FIELDS.get(t, ("color",)), "content": content,
+           "rich": doc.xref_get_key(xref, "RC")[0] == "string",
+           "color": tuple(c["stroke"]) or None, "fill": tuple(c["fill"]) or None,
+           "width": (a.border or {}).get("width", 1) or 0, "opacity": a.opacity if a.opacity >= 0 else 1.0}
+    if t == pymupdf.PDF_ANNOT_FREE_TEXT:
+        out["fill"] = out["color"]                  # a FreeText's /C is its background
+        out["fontsize"], out["text_color"] = _font_style(doc, xref)
+    return out
+
+
+_KEEP = object()
+
+
+@command("Comment.SetStyle")
+def set_style(doc, page, xref: int, text: str | None = None, color=None, fill=_KEEP, width=None, opacity=None,
+              fontsize=None, text_color=None):
+    """Change any of a comment's text and appearance; arguments left out stay as they are.
+    fill=None removes the fill. Colors are RGB tuples of 0..1."""
+    _p, a = _annot(doc, page, xref)
+    t = a.type[0]
+    if text is not None:
+        a.set_info(content=text)
+        if doc.xref_get_key(xref, "RC")[0] == "string":
+            doc.xref_set_key(xref, "RC", pymupdf.get_pdf_str(_rich_body(text)))
+    if width is not None and t not in (pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_TEXT, pymupdf.PDF_ANNOT_STAMP):
+        a.set_border(width=width)
+    if opacity is not None:
+        a.set_opacity(opacity)
+    if t != pymupdf.PDF_ANNOT_FREE_TEXT:
+        if color is not None or fill is not _KEEP:
+            a.set_colors(stroke=color if color is not None else a.colors["stroke"],
+                         fill=(fill or []) if fill is not _KEEP else a.colors["fill"])
+        a.update()
+        return True
+    size, tcol = _font_style(doc, xref)
+    size = fontsize or size
+    tcol = text_color if text_color is not None else tcol
+    if fill is None:
+        doc.xref_set_key(xref, "C", "null")
+    if doc.xref_get_key(xref, "RC")[0] == "string":
+        doc.xref_set_key(xref, "DS", pymupdf.get_pdf_str(
+            "font-family:Helvetica;font-size:%gpt;color:#%02x%02x%02x" % (size, *(round(v * 255) for v in tcol))))
+        a = doc[page - 1].load_annot(xref)              # pick up the new style
+        a.update(fill_color=fill if fill not in (_KEEP, None) else None)
+    else:
+        a.update(fontsize=size, text_color=tcol, fill_color=fill if fill not in (_KEEP, None) else None)
+    return True
 
 
 @command("Comment.SetRect")
