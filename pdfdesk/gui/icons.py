@@ -37,6 +37,7 @@ GLYPHS = {
     "field-list": ("☰", BLUE), "field-button": ("▢", ORANGE), "field-sign": ("✍", GREEN), "recognize": ("⚡", ACCENT),
     "import": ("⇩", BLUE), "export": ("⇧", BLUE), "reset": ("↺", GRAY), "calc": ("Σ", BLUE), "link": ("🔗", BLUE),
     "layers": ("◫", GRAY), "optimize": ("⇲", GREEN), "audit": ("▥", GRAY), "search-folder": ("🔎", BLUE),
+    "invoice": ("🧾", ACCENT), "invoice-view": ("🧾", BLUE), "xml": ("XML", GREEN), "embed-xml": ("📎", GREEN),
     "first": ("⏮", GRAY), "prev": ("◀", GRAY), "next": ("▶", GRAY), "last": ("⏭", GRAY),
 }
 

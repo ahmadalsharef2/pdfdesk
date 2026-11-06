@@ -261,6 +261,11 @@ def transform(doc, page: int, index: int, new_rect):
     # page-space change: scale about the old corner, then move to the new corner
     a_page = pymupdf.Matrix(1, 0, 0, 1, -old.x0, -old.y0) * pymupdf.Matrix(sx, sy) * \
         pymupdf.Matrix(1, 0, 0, 1, new.x0, new.y0)
+    return _apply(doc, p, index, a_page)
+
+
+def _apply(doc, p: pymupdf.Page, index: int, a_page: pymupdf.Matrix):
+    """Apply a page-space matrix (unrotated page coordinates) to object number index."""
     tp = _to_page(p)
     a_pdf = tp * a_page * ~tp
 
@@ -270,6 +275,42 @@ def transform(doc, page: int, index: int, new_rect):
         ops[run.start:run.end + 1] = [_ins("q"), _ins("cm", [n.a, n.b, n.c, n.d, n.e, n.f]), *body, _ins("Q"),
                                       *_state_after(ops, run)]
     return _rewrite(doc, p, index, edit)
+
+
+def _about_center(doc, page: int, index: int, m: pymupdf.Matrix):
+    r = next(o.rect for o in list_objects(doc, page) if o.index == index)
+    c = r.tl + (r.br - r.tl) / 2
+    return _apply(doc, doc[page - 1], index,
+                  pymupdf.Matrix(1, 0, 0, 1, -c.x, -c.y) * m * pymupdf.Matrix(1, 0, 0, 1, c.x, c.y))
+
+
+@command("Object.Rotate")
+def rotate(doc, page: int, index: int, angle: float = 90):
+    """Turn an object about its centre; positive angles turn it clockwise as seen on the page."""
+    return _about_center(doc, page, index, pymupdf.Matrix(angle))
+
+
+@command("Object.Flip")
+def flip(doc, page: int, index: int, horizontal: bool = True):
+    """Mirror an object left-right (horizontal) or top-bottom about its centre."""
+    return _about_center(doc, page, index, pymupdf.Matrix(-1, 0, 0, 1, 0, 0) if horizontal
+                         else pymupdf.Matrix(1, 0, 0, -1, 0, 0))
+
+
+@command("Object.ExportImage")
+def export_image(doc, page: int, index: int, dpi: int = 300) -> tuple[bytes, str]:
+    """(bytes, extension) of an object: an image's own data when it is an image XObject, else a PNG render of
+    its box."""
+    p = doc[page - 1]
+    o = next(o for o in list_objects(doc, page) if o.index == index)
+    if o.kind == "image":
+        xref = next((im[0] for im in p.get_images(full=True) if im[7] == o.name), 0)
+        if xref:
+            img = doc.extract_image(xref)
+            if img and img.get("image"):
+                return img["image"], img.get("ext", "png")
+    clip = o.rect * p.rotation_matrix
+    return p.get_pixmap(dpi=dpi, clip=clip, alpha=False).tobytes("png"), "png"
 
 
 @command("Object.Delete")

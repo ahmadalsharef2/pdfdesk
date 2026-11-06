@@ -92,6 +92,15 @@ Action Wizard all call the same commands).
 - **Advanced Search** (`Search.Folder`): every PDF in a folder, results open at the page. Home tab.
 - `d.Accepted` on a dialog instance does not exist in PySide6 6.12; split, header/footer, watermark and
   properties dialogs were fixed to use `QDialog.Accepted`.
+- **E-invoices** (`invoice.py`, GUI `gui/invoice.py`, ribbon tab **Invoice** after Protect): create ZUGFeRD /
+  Factur-X EN 16931 (PDF/A-3 + `factur-x.xml`, Factur-X XMP, /AF) or XRechnung 3.0 CII XML from a form whose fields
+  follow the choices (public authority → Leitweg-ID etc., VAT treatment §19 / §13b / intra-EU / export, credit note →
+  preceding invoice); two designs, DE/EN; read CII and UBL; ~30 EN 16931 core checks + XRechnung + packaging (not the
+  official Schematron); XML → readable PDF; attach XML to an existing PDF. Mustang 2.17 (2026-11-06): the standard
+  ZUGFeRD sample is valid (PDF/A-3b compliant, XML valid, 0 errors). The XRechnung output was not run through it yet.
+- Right-click menus extended toward Foxit's: text (bookmark, link, redact, note, find, web search), comments (reply,
+  review status, default color), objects (rotate, flip, position & size, export/copy image, link, redact), form
+  fields (clear, reset, delete), page (paste image/text, copy page image, add image, bookmark, print, properties).
 - 28 tests pass (organize, protect, compare, OCR, edit, comment, sign, convert, security). The
   suite is in `tests/`.
 
