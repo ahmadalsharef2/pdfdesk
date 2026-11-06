@@ -787,3 +787,42 @@ class FolderSearchDialog(QDialog):
                 files.add(h["path"])
             self.results.addItem(it)
         self.status.setText(f"{sum(1 for h in hits if h['page'])} matches in {len(files)} file(s)")
+
+
+# ---- object position and size ------------------------------------------------------------------------------
+class GeometryDialog(QDialog):
+    """Position and size of a page object in millimetres from the page's top-left corner."""
+    MM = 72 / 25.4
+
+    def __init__(self, parent, rect):
+        super().__init__(parent)
+        self.setWindowTitle("Position & Size")
+        self.ratio = rect.width / rect.height if rect.height else 1
+        f = QFormLayout(self)
+        self.x, self.y, self.w, self.h = (QDoubleSpinBox(decimals=1, minimum=-2000, maximum=5000, suffix=" mm")
+                                          for _ in range(4))
+        for sb, v in ((self.x, rect.x0), (self.y, rect.y0), (self.w, rect.width), (self.h, rect.height)):
+            sb.setValue(v / self.MM)
+        self.keep = QCheckBox("Keep proportions", checked=True)
+        self.w.valueChanged.connect(lambda v: self.keep.isChecked() and self._sync(self.h, v / self.ratio))
+        self.h.valueChanged.connect(lambda v: self.keep.isChecked() and self._sync(self.w, v * self.ratio))
+        for label, w in (("Left:", self.x), ("Top:", self.y), ("Width:", self.w), ("Height:", self.h)):
+            f.addRow(label, w)
+        f.addRow("", self.keep)
+        _buttons(self, f)
+
+    @staticmethod
+    def _sync(sb, v):
+        sb.blockSignals(True)
+        sb.setValue(v)
+        sb.blockSignals(False)
+
+    @staticmethod
+    def ask(parent, rect):
+        import pymupdf
+        d = GeometryDialog(parent, rect)
+        if d.exec() != QDialog.Accepted:
+            return None
+        m = GeometryDialog.MM
+        x, y = d.x.value() * m, d.y.value() * m
+        return pymupdf.Rect(x, y, x + max(d.w.value(), 0.5) * m, y + max(d.h.value(), 0.5) * m)

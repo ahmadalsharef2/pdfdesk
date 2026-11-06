@@ -7,8 +7,9 @@ Undo/redo keeps whole-document snapshots, which also covers changes made by pike
 from __future__ import annotations
 
 import pymupdf
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, QUrl, Signal
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication, QImage, QKeySequence, QPainter,
+                           QPainterPath, QPen)
 from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit, QMenu
 
 from ..commands import edit as edit_cmds
@@ -35,6 +36,10 @@ CURSORS = {"hand": Qt.OpenHandCursor, "zoom": Qt.CrossCursor, "edit-text": Qt.IB
 # comments whose box is their whole shape, so dragging a corner can resize them
 RESIZABLE_ANNOTS = {pymupdf.PDF_ANNOT_SQUARE, pymupdf.PDF_ANNOT_CIRCLE, pymupdf.PDF_ANNOT_FREE_TEXT,
                     pymupdf.PDF_ANNOT_STAMP}
+# comment type -> the tool that makes it, for "Use as Default Color"
+ANNOT_TOOLS = {"Highlight": "highlight", "Underline": "underline", "StrikeOut": "strikeout", "Squiggly": "squiggly",
+               "Text": "note", "FreeText": "typewriter", "Square": "rectangle", "Circle": "oval", "Line": "line",
+               "Polygon": "polygon", "PolyLine": "polyline", "Ink": "pencil"}
 HANDLE = 4                                                     # half size of a resize handle, in pixels
 
 
@@ -607,7 +612,7 @@ class DocView(QAbstractScrollArea):
         elif self.tool == "edit-object" and self.select_object_at(i, pt):
             self._object_menu(m, i)
         elif w := next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None):
-            m.addAction("Fill in…", lambda x=w.xref: self._emit(tool="fill-field", page=i + 1, xref=x))
+            self._field_menu(m, i, w)
         else:
             self._page_menu(m, i, pt)
         self.viewport().update()
@@ -618,20 +623,52 @@ class DocView(QAbstractScrollArea):
         return any(self.page_rect_to_view(i, r).adjusted(-4, -4, 4, 4).contains(pos)
                    for r, _t in self._text_between(i, a, b))
 
+    def _sel_rects(self) -> list:
+        i, a, b = self.text_sel
+        return [r for r, _t in self._text_between(i, a, b)]
+
     def _text_menu(self, m: QMenu):
-        m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
+        i = self.text_sel[0]
+        text = self.selected_text()
+        rects = self._sel_rects()
+        box = pymupdf.Rect(rects[0]) if rects else None
+        for r in rects[1:]:
+            box |= r
+        m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(text))
+        m.addAction("Select All", lambda: self.select_page_text(i))
+        m.addAction("Deselect", self.clear_text_selection)
         m.addSeparator()
         m.addAction(swatch(self.color_for("highlight")), "Highlight", lambda: self._mark_selection("highlight"))
         fill_color_menu(m.addMenu("Highlight in"), lambda c: self._mark_selection("highlight", c),
                         self.color_for("highlight"))
         for label, tool in (("Underline", "underline"), ("Strikeout", "strikeout"), ("Squiggly", "squiggly"),
-                            ("Replace Text…", "replace-text")):
+                            ("Replace Text…", "replace-text"), ("Add Note to Text…", "highlight-note")):
             m.addAction(label, lambda t=tool: self._mark_selection(t))
+        m.addSeparator()
+        short = " ".join(text.split())
+        m.addAction("Add Bookmark", lambda: self._emit(tool="bookmark-here", page=i + 1, title=short[:120]))
+        if box is not None:
+            m.addAction("Add Link…", lambda: self._emit(tool="link", page=i + 1, rect=box))
+            m.addAction("Mark for Redaction", lambda: self._emit(tool="redact-rects", page=i + 1, rects=rects))
+        m.addSeparator()
+        label = short if len(short) <= 28 else short[:26] + "…"
+        m.addAction(f"Find “{label}”", lambda: self._emit(tool="find", text=short))
+        m.addAction("Search the Web", lambda: QDesktopServices.openUrl(
+            QUrl("https://www.google.com/search?q=" + QUrl.toPercentEncoding(short[:300]).data().decode())))
+
+    def clear_text_selection(self):
+        self.text_sel = None
+        self.viewport().update()
 
     def _annot_menu(self, m: QMenu, i: int, xref: int):
         st = comment_style(self.doc, i + 1, xref)
         restyle = lambda **kw: self._emit(tool="annot-style", page=i + 1, xref=xref, style=kw)
         m.addAction("Properties…", lambda: self._emit(tool="edit-annot", page=i + 1, xref=xref))
+        m.addAction("Reply…", lambda: self._emit(tool="annot-reply", page=i + 1, xref=xref))
+        sm = m.addMenu("Set Status")
+        for s in ("Accepted", "Rejected", "Cancelled", "Completed", "None"):
+            sm.addAction(s, lambda s=s: self._emit(tool="annot-status", page=i + 1, xref=xref, state=s))
+        m.addSeparator()
         for key, label in (("color", "Color"), ("text_color", "Text color")):
             if key in st["fields"]:
                 fill_color_menu(m.addMenu(swatch(st[key]), label), lambda c, k=key: restyle(**{k: c}), st[key])
@@ -654,6 +691,10 @@ class DocView(QAbstractScrollArea):
             a = om.addAction(f"{n} %", lambda n=n: restyle(opacity=n / 100))
             a.setCheckable(True)
             a.setChecked(round(st["opacity"] * 100) == n)
+        tool = ANNOT_TOOLS.get(st["type"])
+        col = st.get("text_color") if st["type"] == "FreeText" else st.get("color")
+        if tool and col:
+            m.addAction("Use as Default Color", lambda: self._emit(tool="tool-color", name=tool, color=tuple(col)))
         if st["content"]:
             m.addAction("Copy text", lambda: QGuiApplication.clipboard().setText(st["content"]))
         m.addSeparator()
@@ -662,18 +703,51 @@ class DocView(QAbstractScrollArea):
     def _object_menu(self, m: QMenu, i: int):
         n = self.obj_sel[1]
         o = next(o for o in self.page_objects(i) if o.index == n)
+        page = i + 1
         if o.kind == "text":
             text = self.doc[i].get_text(clip=o.rect + (-1, -1, 1, 1)).strip()
             m.addAction("Copy text", lambda: QGuiApplication.clipboard().setText(text))
             m.addAction("Edit text", lambda: self._emit(tool="set-tool", name="edit-text"))
+        m.addAction("Copy as Image", lambda: self._copy_object_image(page, n))
+        m.addAction("Export as Image…", lambda: self._emit(tool="object-export", page=page, index=n))
+        m.addSeparator()
+        for label, kw in (("Rotate Right 90°", {"angle": 90}), ("Rotate Left 90°", {"angle": -90}),
+                          ("Flip Horizontal", {"flip": "h"}), ("Flip Vertical", {"flip": "v"})):
+            m.addAction(label, lambda kw=kw: self._emit(tool="object-turn", page=page, index=n, **kw))
+        m.addAction("Position && Size…", lambda: self._emit(tool="object-geometry", page=page, index=n,
+                                                             rect=pymupdf.Rect(o.rect)))
+        m.addSeparator()
+        m.addAction("Add Link…", lambda: self._emit(tool="link", page=page, rect=pymupdf.Rect(o.rect)))
+        m.addAction("Mark for Redaction", lambda: self._emit(tool="redact-rects", page=page, rects=[pymupdf.Rect(o.rect)]))
         m.addSeparator()
         m.addAction("Delete", lambda: self._delete_selected())
+
+    def _copy_object_image(self, page: int, index: int):
+        data, _ext = objects.export_image(self.doc, page, index, dpi=200)
+        QGuiApplication.clipboard().setImage(QImage.fromData(data))
+
+    def _field_menu(self, m: QMenu, i: int, w):
+        page, xref, name = i + 1, w.xref, w.field_name
+        value = w.field_value if isinstance(w.field_value, str) else ""
+        m.addAction("Fill in…", lambda: self._emit(tool="fill-field", page=page, xref=xref))
+        if value:
+            m.addAction("Copy Value", lambda: QGuiApplication.clipboard().setText(value))
+        m.addAction("Clear Value", lambda: self._emit(tool="field-reset", names=[name]))
+        m.addSeparator()
+        m.addAction("Reset All Fields", lambda: self._emit(tool="field-reset", names=None))
+        m.addAction(f"Delete Field “{name}”", lambda: self._emit(tool="field-delete", name=name))
 
     def _page_menu(self, m: QMenu, i: int, pt):
         page = i + 1
         if self.text_sel:
             m.addAction("Copy", lambda: QGuiApplication.clipboard().setText(self.selected_text()))
+        cb = QGuiApplication.clipboard().mimeData()
+        if cb is not None and (cb.hasImage() or cb.hasText()):
+            m.addAction("Paste " + ("Image" if cb.hasImage() else "Text") + " Here",
+                        lambda: self._emit(tool="paste", page=page, point=pt))
         m.addAction("Select all text on this page", lambda: self.select_page_text(i))
+        m.addAction("Copy Page as Image", lambda: QGuiApplication.clipboard().setImage(
+            QImage.fromData(self.doc[i].get_pixmap(dpi=150, alpha=False).tobytes("png"))))
         m.addSeparator()
         for label, tool in (("Hand", "hand"), ("Select Text", "select"), ("Edit Object", "edit-object")):
             a = m.addAction(label, lambda t=tool: self._emit(tool="set-tool", name=t))
@@ -683,17 +757,29 @@ class DocView(QAbstractScrollArea):
         m.addAction("Add note here…", lambda: self._emit(tool="note", page=page, point=pt))
         m.addAction("Add typewriter text here…", lambda: self._emit(tool="typewriter", page=page, point=pt))
         m.addAction("Add text here…", lambda: self._emit(tool="add-text", page=page, point=pt))
+        m.addAction("Add image here…", lambda: self._emit(tool="image-here", page=page, point=pt))
+        m.addAction("Add Bookmark for This Page", lambda: self._emit(tool="bookmark-here", page=page, title=f"Page {page}"))
         m.addSeparator()
-        m.addAction("Zoom in", lambda: self.set_zoom(self.zoom * 1.25))
-        m.addAction("Zoom out", lambda: self.set_zoom(self.zoom / 1.25))
-        m.addAction("Fit width", self.fit_width)
-        m.addAction("Fit page", self.fit_page)
+        if i > 0:
+            m.addAction("Previous Page", lambda: self.goto(i - 1))
+        if i + 1 < self.doc.page_count:
+            m.addAction("Next Page", lambda: self.goto(i + 1))
+        m.addAction("Find…", lambda: self._emit(tool="app", name="find"))
+        zm = m.addMenu("Zoom")
+        zm.addAction("Zoom in", lambda: self.set_zoom(self.zoom * 1.25))
+        zm.addAction("Zoom out", lambda: self.set_zoom(self.zoom / 1.25))
+        zm.addAction("Actual size", lambda: self.set_zoom(1.0))
+        zm.addAction("Fit width", self.fit_width)
+        zm.addAction("Fit page", self.fit_page)
         m.addSeparator()
         pg = m.addMenu(f"Page {page}")
         for label, name in (("Rotate right", "rotate-right"), ("Rotate left", "rotate-left"),
-                            ("Insert blank page after", "insert-blank"), ("Duplicate", "duplicate"),
-                            ("Extract…", "extract"), ("Delete", "delete")):
+                            ("Insert blank page after", "insert-blank"), ("Insert from file after…", "insert-file"),
+                            ("Duplicate", "duplicate"), ("Extract…", "extract"), ("Delete", "delete")):
             pg.addAction(label, lambda n=name: self._emit(tool="page-command", name=n, pages=[i]))
+        m.addSeparator()
+        m.addAction("Print…", lambda: self._emit(tool="app", name="print"))
+        m.addAction("Document Properties…", lambda: self._emit(tool="app", name="properties"))
 
     def _delete_selected(self):
         if self.obj_sel:

@@ -167,6 +167,10 @@ class Comments(QListWidget):
         m = QMenu(self)
         m.addAction("Go to", lambda: self.activated.emit(*it.data(ROLE)))
         m.addAction("Properties…", lambda: self.command.emit("properties", *it.data(ROLE)))
+        m.addAction("Reply…", lambda: self.command.emit("reply", *it.data(ROLE)))
+        st = m.addMenu("Set Status")
+        for s in ("Accepted", "Rejected", "Cancelled", "Completed", "None"):
+            st.addAction(s, lambda s=s: self.command.emit("status:" + s, *it.data(ROLE)))
         m.addSeparator()
         m.addAction("Delete", lambda: self.command.emit("delete", *it.data(ROLE)))
         m.exec(self.viewport().mapToGlobal(pos))
@@ -176,8 +180,21 @@ class Comments(QListWidget):
         if doc is None:
             return
         from ..commands import run
-        for c in run("Comment.List", doc):
+        items = run("Comment.List", doc)
+        replies: dict[int, list] = {}
+        for c in items:
+            if c["reply_to"]:
+                replies.setdefault(c["reply_to"], []).append(c)
+
+        def add(c, depth):
             text = c["content"].replace("\n", " ")
-            it = QListWidgetItem(f"p.{c['page']}  {c['type']}  {c['author']}\n{text[:80]}")
+            state = f"  [{c['state']}]" if c["state"] else ""
+            head = ("    ↳ " * depth) + (f"{c['author']}" if depth else f"p.{c['page']}  {c['type']}  {c['author']}")
+            it = QListWidgetItem(f"{head}{state}\n{'      ' * depth}{text[:80]}")
             it.setData(ROLE, (c["page"] - 1, c["xref"]))
             self.addItem(it)
+            for r in replies.get(c["xref"], []):
+                add(r, depth + 1)
+        for c in items:
+            if not c["reply_to"]:
+                add(c, 0)

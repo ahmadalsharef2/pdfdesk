@@ -28,7 +28,7 @@ from .start import StartPage, add_recent
 from .viewer import DocView
 
 RIBBON = ["File", "Home", "Convert", "Edit", "Fill && Sign", "Organize", "Comment", "View", "Form",
-          "Protect", "Share", "Connect", "Accessibility", "Help"]
+          "Protect", "Invoice", "Share", "Connect", "Accessibility", "Help"]
 NOT_YET = {"Share": "Email, shared review and cloud drives",
            "Connect": "Connected services", "Accessibility": "Accessibility check and tagging"}
 
@@ -499,6 +499,17 @@ class Main(QMainWindow):
         G("Protect", "Sign & Certify", [TL("Sign", "digital-sign"), L("Certify", "certify", lambda: self.digital_sign(None, certify=True)),
                                         stack(S("Create ID", "id", self.create_id), S("Validate", "validate", self.validate))])
 
+        # Invoice — e-invoices (ZUGFeRD / Factur-X, XRechnung), not a Foxit tab
+        G("Invoice", "Create", [L("Create E-Invoice", "invoice", self.invoice_create,
+                                  tip="Fill in a form; get a ZUGFeRD PDF/A-3 with the invoice XML inside, or XRechnung XML"),
+                                L("Make ZUGFeRD", "embed-xml", self.invoice_embed,
+                                  tip="Turn this PDF into a ZUGFeRD file by attaching an e-invoice XML you already have")])
+        G("Invoice", "Open", [L("Open XML Invoice", "xml", self.invoice_open_xml,
+                                tip="Show an XRechnung or ZUGFeRD XML file as a readable PDF")])
+        G("Invoice", "Check", [L("View Invoice Data", "invoice-view", self.invoice_view),
+                               L("Check Invoice", "validate", lambda: self.invoice_view(check=True)),
+                               stack(S("Save XML", "export", self.invoice_save_xml))])
+
         # Form — Foxit's Form tab: Tools | Form Fields | Form Recognition | Form Data | Manage
         self.tools_group("Form")
         G("Form", "Form Fields", [grid([TI("Text Field", "field-text"), TI("Check Box", "field-check"),
@@ -587,6 +598,13 @@ class Main(QMainWindow):
         elif name == "delete":
             v.selected = None
             self.apply("Delete comment", lambda d: run("Comment.Delete", d, page0 + 1, xref))
+        elif name == "reply":
+            r = dialogs.TextDialog.ask(self, "Reply", "Reply:")
+            if r:
+                self.apply("Reply", lambda d: run("Comment.Reply", d, page0 + 1, xref, r, author=self.author))
+        elif name.startswith("status:"):
+            st = name.split(":", 1)[1]
+            self.apply(f"Status {st}", lambda d: run("Comment.SetStatus", d, page0 + 1, xref, st, author=self.author))
 
     def _tab_menu(self, pos):
         from PySide6.QtWidgets import QMenu
@@ -630,6 +648,19 @@ class Main(QMainWindow):
             return self.set_tool(a["name"])
         if t == "page-command":
             return self._page_command(a["name"], a["pages"])
+        if t == "find":
+            self.find_box.setText(a["text"])
+            return self.do_find()
+        if t == "app":
+            return {"find": lambda: (self.find_box.setFocus(), self.find_box.selectAll()), "print": self.print_doc,
+                    "properties": self.properties}[a["name"]]()
+        if t == "tool-color":
+            self.tool_colors[a["name"]] = tuple(a["color"])
+            QSettings("pdfdesk", "pdfdesk").setValue("tool_colors", json.dumps(self.tool_colors))
+            self._show_tool_color()
+            return self.msg(f"New {a['name'].replace('-', ' ')} comments use this color")
+        if t == "object-export":
+            return self._export_object(page, a["index"])
         if t in ("move-annot", "delete-annot", "edit-annot", "edit-text-commit", "sign-place", "annot-rect",
                  "object-rect", "delete-object", "annot-style") or t not in (
                 "select", "hand", "zoom"):
@@ -658,6 +689,39 @@ class Main(QMainWindow):
                 name = {"highlight": "Highlight", "underline": "Underline", "strikeout": "Strikeout",
                         "squiggly": "Squiggly"}[t]
                 return self.apply(name, lambda d: run(f"Comment.{name}", d, page, a["start"], a["stop"], author=au, **cw))
+            if t == "highlight-note":
+                r = dialogs.TextDialog.ask(self, "Note on text", "Note:")
+                return r and self.apply("Highlight with note", lambda d: run("Comment.Highlight", d, page, a["start"], a["stop"],
+                                                                             author=au, note=r, **cw))
+            if t == "bookmark-here":
+                title, ok = QInputDialog.getText(self, "Add bookmark", "Title:", text=a["title"] or f"Page {page}")
+                return ok and title and self.apply("Add bookmark", lambda d: run("Bookmarks.Add", d, title, page))
+            if t == "redact-rects":
+                self.apply("Mark for redaction", lambda d: run("Redact.MarkRects", d, page, a["rects"]))
+                return self.msg("Marked for redaction — use Protect > Apply Redactions to remove it permanently")
+            if t == "annot-reply":
+                r = dialogs.TextDialog.ask(self, "Reply", "Reply:")
+                return r and self.apply("Reply", lambda d: run("Comment.Reply", d, page, a["xref"], r, author=au))
+            if t == "annot-status":
+                return self.apply(f"Status {a['state']}", lambda d: run("Comment.SetStatus", d, page, a["xref"], a["state"], author=au))
+            if t == "object-turn":
+                if "flip" in a:
+                    return self.apply("Flip object", lambda d: run("Object.Flip", d, page, a["index"], a["flip"] == "h"))
+                return self.apply("Rotate object", lambda d: run("Object.Rotate", d, page, a["index"], a["angle"]))
+            if t == "object-geometry":
+                r = dialogs.GeometryDialog.ask(self, a["rect"])
+                return r and self.apply("Position and size", lambda d: run("Object.Transform", d, page, a["index"], r))
+            if t == "field-reset":
+                return self.apply("Clear field" if a["names"] else "Reset form", lambda d: run("Form.Reset", d, a["names"]))
+            if t == "field-delete":
+                if QMessageBox.question(self, "Delete field", f"Delete the field “{a['name']}”?") == QMessageBox.Yes:
+                    self.apply("Delete field", lambda d: run("Form.DeleteField", d, a["name"]))
+                return
+            if t == "paste":
+                return self._paste(page, a["point"])
+            if t == "image-here":
+                p = QFileDialog.getOpenFileName(self, "Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")[0]
+                return p and self._place_image(page, a["point"], open(p, "rb").read())
             if t == "replace-text":
                 r = dialogs.TextDialog.ask(self, "Replace text", "Replacement text:")
                 return r and self.apply("Replace text", lambda d: run("Comment.ReplaceText", d, page, a["start"], a["stop"], r, author=au))
@@ -734,6 +798,40 @@ class Main(QMainWindow):
             self.cur().select_object_at(page - 1, placed.tl + (placed.br - placed.tl) / 2)
             self.msg("Signature placed. Drag to move it, drag a corner to resize, Delete removes it.", 8000)
 
+    def _place_image(self, page: int, point, data: bytes):
+        from PySide6.QtGui import QImage
+        img = QImage.fromData(data)
+        if img.isNull():
+            return self.error("Image", "This is not an image Qt can read.")
+        w, h = img.width() * 0.75, img.height() * 0.75          # pixels at 96 dpi -> points
+        pr = self.cur().doc[page - 1].rect
+        k = max(0.05, min(1.0, (pr.width - point.x - 10) / w if w else 1, 300 / max(w, h, 1)))
+        rect = pymupdf.Rect(point.x, point.y, point.x + w * k, point.y + h * k)
+        return self.apply("Add image", lambda d: run("Sign.Image", d, page, rect, data=data))
+
+    def _paste(self, page: int, point):
+        from PySide6.QtCore import QBuffer, QIODevice
+        md = QApplication.clipboard().mimeData()
+        if md.hasImage():
+            buf = QBuffer()
+            buf.open(QIODevice.WriteOnly)
+            QApplication.clipboard().image().save(buf, "PNG")
+            return self._place_image(page, point, bytes(buf.data()))
+        text = md.text().strip()
+        if text:
+            return self.apply("Paste text", lambda d: run("Text.Add", d, page, point, text, fontsize=11))
+
+    def _export_object(self, page: int, index: int):
+        v = self.cur()
+        data, ext = run("Object.ExportImage", v.doc, page, index)
+        base = os.path.splitext(os.path.basename(v.path or "document"))[0]
+        p = QFileDialog.getSaveFileName(self, "Export as image", f"{base}_p{page}_object{index}.{ext}",
+                                        f"Image (*.{ext})")[0]
+        if p:
+            with open(p, "wb") as f:
+                f.write(data)
+            self.msg(f"Saved {p}")
+
     # ---- applying edits ----------------------------------------------------------------------------
     def apply(self, label: str, fn):
         """Run fn(doc) as one undoable step. A failure restores the document and shows the error."""
@@ -808,6 +906,7 @@ class Main(QMainWindow):
             QMessageBox.information(self, "Restricted", "This file was opened with its user password and does not "
                                     "allow changes. You can read and print it but not edit it.")
         self._add(v, os.path.basename(path))
+        self._announce_invoice(v)
         add_recent(path)
         self.start.refresh()
         return v
@@ -1499,6 +1598,129 @@ class Main(QMainWindow):
                 self.open_path(out)
             except Exception as e:  # noqa: BLE001
                 self.error("PDF/A", e)
+
+    # ---- e-invoices ----------------------------------------------------------------------------------------
+    def _announce_invoice(self, v: DocView):
+        from ..commands import invoice
+        try:
+            found = invoice.find_xml(v.doc)
+            std = invoice.parse(found[1])["standard"] if found else None
+        except Exception:  # noqa: BLE001
+            return
+        if std:
+            self.msg(f"This PDF is an e-invoice ({std}). Invoice tab > View Invoice Data shows and checks it.")
+
+    def invoice_create(self):
+        from . import invoice as ui
+        r = ui.InvoiceDialog.ask(self)
+        if not r:
+            return
+        inv, out = r["invoice"], r["output"]
+        base = "".join(c if c.isalnum() or c in "-_" else "_" for c in inv["number"]) or "invoice"
+        folder = QSettings("pdfdesk", "pdfdesk").value("invoice/folder", os.path.expanduser("~"))
+        pdf = xml = None
+        if out in ("pdf", "both"):
+            pdf = QFileDialog.getSaveFileName(self, "Save e-invoice", os.path.join(folder, base + ".pdf"), "PDF (*.pdf)")[0]
+            if not pdf:
+                return
+            if out == "both":
+                xml = os.path.splitext(pdf)[0] + ".xml"
+        else:
+            xml = QFileDialog.getSaveFileName(self, "Save XRechnung XML", os.path.join(folder, base + ".xml"), "XML (*.xml)")[0]
+            if not xml:
+                return
+        QSettings("pdfdesk", "pdfdesk").setValue("invoice/folder", os.path.dirname(pdf or xml))
+        self.msg("Creating e-invoice (PDF/A-3)…")
+        QApplication.processEvents()
+        try:
+            res = run("Invoice.Create", inv, out_pdf=pdf, out_xml=xml, lang=r["lang"], design=r["design"],
+                      accent=r["accent"], logo=r["logo"])
+            errors = [c for c in run("Invoice.Check", pdf or res["xml"]) if c[0] == "error"]
+        except Exception as e:  # noqa: BLE001
+            return self.error("Create E-Invoice", e)
+        if pdf:
+            self.open_path(pdf)
+        else:
+            self.new_doc(run("Invoice.Visualize", xml, lang=r["lang"]), os.path.basename(xml) + ".pdf")
+        what = " and ".join(os.path.basename(x) for x in (pdf, xml) if x)
+        self.msg(f"Saved {what}" + (f" — {len(errors)} check error(s), see Check Invoice" if errors else " — checks passed"))
+
+    def invoice_open_xml(self):
+        p = QFileDialog.getOpenFileName(self, "Open XML e-invoice", "", "E-invoice XML (*.xml);;All files (*)")[0]
+        if not p:
+            return
+        try:
+            doc = run("Invoice.Visualize", p)
+            inv = run("Invoice.Read", p)
+            n = sum(1 for c in run("Invoice.Check", inv) if c[0] == "error")
+        except Exception as e:  # noqa: BLE001
+            return self.error("Open XML invoice", e)
+        self.new_doc(doc, os.path.splitext(os.path.basename(p))[0] + ".pdf")
+        self.msg(f"{inv['standard']} invoice {inv['number']} — " + (f"{n} check error(s)" if n else "checks passed")
+                 + ". The XML is attached; save to keep the PDF.")
+
+    def _invoice_of_current(self):
+        from ..commands import invoice
+        v = self.cur()
+        if not v:
+            return None, None
+        found = invoice.find_xml(v.doc)
+        if not found:
+            self.error("E-invoice", "This PDF has no embedded e-invoice XML (ZUGFeRD / Factur-X / XRechnung).")
+            return None, None
+        inv = invoice.parse(found[1])
+        inv["source"] = found[0]
+        return inv, found[1]
+
+    def invoice_view(self, check: bool = False):
+        from . import invoice as ui
+        try:
+            inv, xml = self._invoice_of_current()
+            if not inv:
+                return
+            checks = run("Invoice.Check", self.cur().doc)
+        except Exception as e:  # noqa: BLE001
+            return self.error("E-invoice", e)
+        d = ui.InvoiceViewDialog(self, inv, checks, xml)
+        if check:
+            d.tabs.setCurrentIndex(1)
+        d.exec()
+
+    def invoice_save_xml(self):
+        inv, xml = self._invoice_of_current()
+        if inv:
+            p = QFileDialog.getSaveFileName(self, "Save XML", inv.get("source") or "invoice.xml", "XML (*.xml)")[0]
+            if p:
+                with open(p, "wb") as f:
+                    f.write(xml)
+                self.msg(f"Saved {p}")
+
+    def invoice_embed(self):
+        v = self.cur()
+        if not v:
+            return
+        x = QFileDialog.getOpenFileName(self, "E-invoice XML to attach", "", "XML (*.xml)")[0]
+        if not x:
+            return
+        with open(x, "rb") as f:
+            data = f.read()
+        try:
+            inv = run("Invoice.Read", data)
+        except Exception as e:  # noqa: BLE001
+            return self.error("Make ZUGFeRD", f"{os.path.basename(x)} is not an e-invoice: {e}")
+        if inv["syntax"] != "CII":
+            return self.error("Make ZUGFeRD", "ZUGFeRD needs CII XML; this is UBL (XRechnung UBL is sent as XML on its own).")
+        out = QFileDialog.getSaveFileName(self, "Save ZUGFeRD PDF", os.path.splitext(v.path or "invoice")[0] + "_zugferd.pdf",
+                                          "PDF (*.pdf)")[0]
+        if not out:
+            return
+        self.msg("Converting to PDF/A-3 and attaching the XML…")
+        QApplication.processEvents()
+        try:
+            run("Invoice.Embed", self._current_file(), data, out)
+        except Exception as e:  # noqa: BLE001
+            return self.error("Make ZUGFeRD", e)
+        self.open_path(out)
 
 
 def launch(argv):

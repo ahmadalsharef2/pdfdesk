@@ -250,14 +250,55 @@ def stamp(doc, page, rect, name="Approved", author=None):
 # ---- managing ---------------------------------------------------------------------------------------
 @command("Comment.List")
 def list_comments(doc):
-    out = []
+    out, states = [], {}
     for p in doc:
         for a in p.annots() or []:
             if a.type[0] in (pymupdf.PDF_ANNOT_WIDGET, pymupdf.PDF_ANNOT_LINK, pymupdf.PDF_ANNOT_POPUP):
                 continue
+            irt = doc.xref_get_key(a.xref, "IRT")
+            parent = int(irt[1].split()[0]) if irt[0] == "xref" else None
+            state = doc.xref_get_key(a.xref, "State")
+            if parent and state[0] == "string":           # a review status set on the parent, not a comment
+                states[parent] = state[1]
+                continue
             out.append({"page": p.number + 1, "xref": a.xref, "type": a.type[1], "author": a.info.get("title", ""),
-                        "content": a.info.get("content", ""), "rect": tuple(a.rect)})
+                        "content": a.info.get("content", ""), "rect": tuple(a.rect), "reply_to": parent})
+    for c in out:
+        c["state"] = "" if states.get(c["xref"], "None") == "None" else states.get(c["xref"], "")
     return out
+
+
+HIDDEN_FLAGS = pymupdf.PDF_ANNOT_IS_HIDDEN | pymupdf.PDF_ANNOT_IS_NO_VIEW
+REVIEW_STATES = ("Accepted", "Rejected", "Cancelled", "Completed", "None")
+
+
+def _child(doc, page, xref, text, author, flags):
+    p = doc[page - 1]
+    parent = p.load_annot(xref)
+    a = p.add_text_annot(parent.rect.tl, text, icon="Comment")
+    a.set_info(content=text, title=author or "")
+    a.set_flags(flags)
+    a.update()
+    doc.xref_set_key(a.xref, "IRT", f"{xref} 0 R")
+    return a.xref
+
+
+@command("Comment.Reply")
+def reply(doc, page, xref: int, text: str, author=None):
+    """A reply to a comment (a note with /IRT, as Acrobat and Foxit write them). Not drawn on the page; the
+    Comments panel shows it under its comment."""
+    return _child(doc, page, xref, text, author, pymupdf.PDF_ANNOT_IS_NO_VIEW | pymupdf.PDF_ANNOT_IS_PRINT)
+
+
+@command("Comment.SetStatus")
+def set_status(doc, page, xref: int, state: str, author=None):
+    """Review status of a comment: Accepted, Rejected, Cancelled, Completed or None (a hidden /State reply)."""
+    if state not in REVIEW_STATES:
+        raise ValueError(f"status must be one of {', '.join(REVIEW_STATES)}")
+    n = _child(doc, page, xref, f"{author or 'Someone'} set status to {state}", author, pymupdf.PDF_ANNOT_IS_HIDDEN)
+    doc.xref_set_key(n, "State", pymupdf.get_pdf_str(state))
+    doc.xref_set_key(n, "StateModel", pymupdf.get_pdf_str("Review"))
+    return n
 
 
 @command("Comment.At")
@@ -266,7 +307,7 @@ def annot_at(doc, page, point):
     p = doc[page - 1]
     best = None
     for a in p.annots() or []:
-        if a.type[0] in (pymupdf.PDF_ANNOT_WIDGET, pymupdf.PDF_ANNOT_POPUP):
+        if a.type[0] in (pymupdf.PDF_ANNOT_WIDGET, pymupdf.PDF_ANNOT_POPUP) or a.flags & HIDDEN_FLAGS:
             continue
         if (a.rect + (-3, -3, 3, 3)).contains(pt) and (best is None or a.rect.get_area() < best.rect.get_area()):
             best = a
