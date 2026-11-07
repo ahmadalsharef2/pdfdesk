@@ -1,6 +1,7 @@
 """Convert tab (plan phase 10): create PDFs from other files, export PDFs to other formats."""
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -81,7 +82,7 @@ def _text_to_pdf(text: str, fontsize: float = 10) -> pymupdf.Document:
 
 def _html_to_pdf(html: str, base: str) -> pymupdf.Document:
     story = pymupdf.Story(html=html, archive=pymupdf.Archive(base))
-    buf = __import__("io").BytesIO()
+    buf = io.BytesIO()
     writer = pymupdf.DocumentWriter(buf)
     mediabox = pymupdf.paper_rect("a4")
     where = mediabox + (40, 40, -40, -40)
@@ -244,10 +245,25 @@ def to_powerpoint(doc, out: str, pages: str | None = None):
     return out
 
 
+def _ocrmypdf_without_tesseract():
+    """OCRmyPDF's plugins, with the Tesseract one kept for its options but not its check that the tesseract
+    program is installed: pdfdesk does OCR with Paddle and uses OCRmyPDF only for PDF/A."""
+    import types
+
+    import ocrmypdf.builtin_plugins.tesseract_ocr as tess
+    from ocrmypdf._plugin_manager import get_plugin_manager
+    pm = get_plugin_manager([])
+    pm._pm.unregister(name="ocrmypdf.builtin_plugins.tesseract_ocr")
+    hooks = {k: getattr(tess, k) for k in dir(tess) if hasattr(getattr(tess, k), "ocrmypdf_impl")}
+    pm._pm.register(types.SimpleNamespace(**{k: f for k, f in hooks.items() if k not in ("check_options", "validate")}),
+                    name="tesseract-options")
+    return pm
+
+
 @command("Convert.ToPDFA")
 def to_pdfa(src: str, out: str, part: int = 2):
-    """Convert to PDF/A-1b/2b/3b with OCRmyPDF's Ghostscript pipeline (no OCR on pages that have text)."""
+    """Convert to PDF/A-1b/2b/3b with OCRmyPDF's Ghostscript pipeline, without OCR."""
     import ocrmypdf
     ocrmypdf.ocr(src, out, output_type=f"pdfa-{part}", skip_text=True, optimize=0, progress_bar=False,
-                 tesseract_timeout=0)
+                 ocr_engine="none", plugin_manager=_ocrmypdf_without_tesseract())
     return out

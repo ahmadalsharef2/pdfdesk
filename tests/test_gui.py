@@ -4,10 +4,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pymupdf
 from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox
 
 from pdfdesk.commands import run as run_cmd
+from pdfdesk.core import security as sec
 from pdfdesk.gui import dialogs
 from pdfdesk.gui.app import RIBBON, Main
 
@@ -112,11 +113,10 @@ def test_thumbnail_reorder_and_delete(v1_path, monkeypatch):
     assert w.thumbs.count() == 6
     w._reorder([5, 0, 1, 2, 3, 4])
     assert "page 6" in w.cur().doc[0].get_text()
-    from PySide6.QtWidgets import QMessageBox
     monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))  # would block
     w._page_command("delete", [0])
     assert w.cur().doc.page_count == 5 and w.thumbs.count() == 5
-    
+
 
 def test_signature_placement_and_digital_sign(v1_path, tmp_path, monkeypatch):
     app = _app()
@@ -129,41 +129,33 @@ def test_signature_placement_and_digital_sign(v1_path, tmp_path, monkeypatch):
     w.on_tool({"tool": "sign-place", "page": 6, "rect": pymupdf.Rect(300, 600, 500, 650), "point": pymupdf.Point(300, 600)})
     assert "Jane Doe" in v.doc[5].get_text()
 
-    pfx = dialogs.IDS.parent / "test.pfx"
-    from pdfdesk.commands import run
-    run("Sign.CreateID", str(tmp_path / "t.pfx"), "GUI Tester", "pw")
+    run_cmd("Sign.CreateID", str(tmp_path / "t.pfx"), "GUI Tester", "pw")
     monkeypatch.setattr(dialogs.DigitalSignDialog, "ask", staticmethod(lambda *a, **k: {
         "pfx": str(tmp_path / "t.pfx"), "password": "pw", "reason": "ok", "location": None, "certify": None,
         "invisible": False}))
     out = str(tmp_path / "s.pdf")
-    from PySide6.QtWidgets import QFileDialog
     monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (out, "")))
     w.on_tool({"tool": "digital-sign", "page": 6, "rect": pymupdf.Rect(300, 700, 500, 760), "point": pymupdf.Point(300, 700)})
-    res = run("Sign.Validate", out, trusted_pfx=[(str(tmp_path / "t.pfx"), "pw")])
+    res = run_cmd("Sign.Validate", out, trusted_pfx=[(str(tmp_path / "t.pfx"), "pw")])
     assert res and res[0]["valid"] and res[0]["intact"]
 
 
-def test_save_keeps_password(tmp_path):
-    app = _app()
+def test_save_keeps_password(tmp_path, monkeypatch):
+    _app()
     d = pymupdf.open()
     d.new_page().insert_text((72, 72), "hello")
     p = str(tmp_path / "e.pdf")
-    from pdfdesk.core import security as sec
     d.save(p, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="u", owner_pw="o",
            permissions=sec.permissions(allow_print=False))
     w = Main()
-    from PySide6.QtWidgets import QInputDialog
-    import pytest
-    pytest.importorskip("PySide6")
-    QInputDialog.getText = staticmethod(lambda *a, **k: ("o", True))
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("o", True)))
     v = w.open_path(p)
     assert v is not None and not v.readonly and v.security.owner_pw == "o"
-    # user password unknown -> would normally prompt; supply it
-    QInputDialog.getText = staticmethod(lambda *a, **k: ("u", True))
+    # the open password is unknown, so saving asks for it
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("u", True)))
     w.apply("note", lambda d: d[0].add_text_annot((50, 50), "n"))
     assert w.save()
-    re = pymupdf.open(p)
-    assert re.needs_pass
+    assert pymupdf.open(p).needs_pass
 
 
 def test_edit_text_kept_when_clicking_away(v1_path):
@@ -207,7 +199,6 @@ def test_signature_select_resize_and_delete(v1_path, tmp_path, monkeypatch):
     _drag(v, (c.x(), c.y()), (c.x() - 100, c.y()))                        # body: move
     _i, moved, _ = v._selection()
     assert abs(moved.x0 - (small.x0 - 100)) < 1
-    from PySide6.QtGui import QKeyEvent
     v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
     assert "Muster GmbH" not in v.doc[5].get_text()
     w.undo()
@@ -232,3 +223,55 @@ def test_hand_resizes_box_comment(v1_path):
     page = v.doc[0]
     r = next(page.annots()).rect
     assert abs(r.x1 - 260) < 3 and abs(r.y1 - 190) < 3 and abs(r.x0 - 100) < 3
+
+
+def test_auto_redact_from_the_window(v1_path, monkeypatch):
+    _app()
+    w = Main()
+    v = w.open_path(v1_path)
+
+    def fake_exec(d):
+        d.search()
+        d.apply_now = True
+        d._accept()
+        return QDialog.Accepted
+    monkeypatch.setattr(dialogs.AutoRedactDialog, "exec", fake_exec)
+    w.auto_redact()
+    assert all("jane.doe" not in p.get_text() and "555-0142" not in p.get_text() for p in v.doc)
+    w.undo()
+    w.undo()
+    assert "jane.doe" in v.doc[0].get_text()
+
+
+def test_window_in_arabic_is_right_to_left():
+    app = _app()
+    from pdfdesk import lang
+    lang.install(app, "ar")
+    try:
+        w = Main()
+        assert app.layoutDirection() == Qt.RightToLeft
+        assert w.ribbon.bar.tabText(0) == "ملف"
+    finally:
+        lang.install(app, "en")
+
+
+def test_file_manager_combine_and_convert(tmp_path, monkeypatch):
+    """Two launches (Explorer starts one per file) end in one Combine dialog; Convert opens an image as a PDF."""
+    from conftest import make_contract
+    _app()
+    w = Main()
+    a, b = str(tmp_path / "b.pdf"), str(tmp_path / "a.pdf")
+    make_contract(a)
+    make_contract(b)
+    asked = []
+    monkeypatch.setattr(dialogs.CombineDialog, "ask", staticmethod(lambda parent, paths: asked.append(paths) or paths))
+    w.receive("combine", [a])
+    w.receive("combine", [b])
+    w._run_batch()                                  # what the timer does once no more launches arrive
+    assert asked == [[b, a]]                        # one dialog, sorted by name
+    assert w.cur().doc.page_count == 12 and w.cur().modified
+    png = str(tmp_path / "scan.png")
+    pymupdf.open(a)[0].get_pixmap(dpi=50).save(png)
+    w.receive("convert", [png])
+    w._run_batch()
+    assert w.docs.tabText(w.docs.currentIndex()).startswith("scan.pdf") and w.cur().doc.page_count == 1

@@ -8,12 +8,33 @@ import json
 import re
 
 from PySide6.QtCore import QDate, QSettings, Qt
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-                               QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-                               QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..commands import invoice as inv_cmds
+from ..lang import tr
+from . import theme
 from .dialogs import ColorButton
 
 UNIT_CHOICES = [("C62", "piece"), ("HUR", "hour"), ("DAY", "day"), ("MON", "month"), ("LS", "lump sum"),
@@ -41,7 +62,7 @@ def _next_number(last: str) -> str:
 class InvoiceDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Create E-Invoice")
+        self.setWindowTitle(tr("Create E-Invoice"))
         self.resize(760, 620)
         st = _settings()
         self.saved = json.loads(st.value("invoice/seller", "{}") or "{}")
@@ -55,42 +76,42 @@ class InvoiceDialog(QDialog):
         self.f_main = f = QFormLayout(w)
         self.type = QComboBox()
         for code, label in TYPES:
-            self.type.addItem(label, code)
+            self.type.addItem(tr(label), code)
         self.number = QLineEdit(_next_number(st.value("invoice/last_number", "")))
-        self.preceding = QLineEdit(placeholderText="Number of the invoice this one corrects or credits")
+        self.preceding = QLineEdit(placeholderText=tr("Number of the invoice this one corrects or credits"))
         self.issue = QDateEdit(QDate.currentDate(), calendarPopup=True)
         self.delivery = QDateEdit(QDate.currentDate(), calendarPopup=True)
-        self.due_days = QSpinBox(minimum=0, maximum=365, value=int(prefs.get("due_days", 14)), suffix=" days")
+        self.due_days = QSpinBox(minimum=0, maximum=365, value=int(prefs.get("due_days", 14)), suffix=tr(" days"))
         self.currency = QComboBox(editable=True)
-        self.currency.addItems(["EUR", "CHF", "USD", "GBP"])
-        self.public = QCheckBox("Customer is a public authority (XRechnung)")
+        self.currency.addItems([tr(s) for s in ("EUR", "CHF", "USD", "GBP")])
+        self.public = QCheckBox(tr("Customer is a public authority (XRechnung)"))
         self.b = {k: QLineEdit() for k in ("name", "street", "zip", "city", "vat_id", "email", "electronic_address",
                                            "leitweg", "order")}
         self.b_country = QLineEdit("DE", maxLength=2)
-        self.b["leitweg"].setPlaceholderText("e.g. 04011000-12345-34")
-        self.b["electronic_address"].setPlaceholderText("Customer's e-invoice address (e-mail)")
-        f.addRow("Document:", self.type)
-        f.addRow("Invoice number:", self.number)
-        f.addRow("Refers to invoice:", self.preceding)
-        f.addRow("Invoice date:", self.issue)
-        f.addRow("Delivery / service date:", self.delivery)
-        f.addRow("Payment due in:", self.due_days)
-        f.addRow("Currency:", self.currency)
-        f.addRow(QLabel("<b>Customer</b>"))
+        self.b["leitweg"].setPlaceholderText(tr("e.g. 04011000-12345-34"))
+        self.b["electronic_address"].setPlaceholderText(tr("Customer's e-invoice address (e-mail)"))
+        f.addRow(tr("Document:"), self.type)
+        f.addRow(tr("Invoice number:"), self.number)
+        f.addRow(tr("Refers to invoice:"), self.preceding)
+        f.addRow(tr("Invoice date:"), self.issue)
+        f.addRow(tr("Delivery / service date:"), self.delivery)
+        f.addRow(tr("Payment due in:"), self.due_days)
+        f.addRow(tr("Currency:"), self.currency)
+        f.addRow(QLabel("<b>" + tr("Customer") + "</b>"))
         f.addRow("", self.public)
-        f.addRow("Name / company:", self.b["name"])
-        f.addRow("Street:", self.b["street"])
+        f.addRow(tr("Name / company:"), self.b["name"])
+        f.addRow(tr("Street:"), self.b["street"])
         row = QHBoxLayout()
         row.addWidget(self.b["zip"], 1)
         row.addWidget(self.b["city"], 3)
         row.addWidget(self.b_country)
         self.b_country.setFixedWidth(44)
-        f.addRow("Post code, city, country:", row)
-        f.addRow("Customer VAT ID:", self.b["vat_id"])
-        f.addRow("Leitweg-ID:", self.b["leitweg"])
-        f.addRow("E-invoice address:", self.b["electronic_address"])
-        f.addRow("Order / reference:", self.b["order"])
-        self.tabs.addTab(w, "Invoice && Customer")
+        f.addRow(tr("Post code, city, country:"), row)
+        f.addRow(tr("Customer VAT ID:"), self.b["vat_id"])
+        f.addRow(tr("Leitweg-ID:"), self.b["leitweg"])
+        f.addRow(tr("E-invoice address:"), self.b["electronic_address"])
+        f.addRow(tr("Order / reference:"), self.b["order"])
+        self.tabs.addTab(w, tr("Invoice && Customer"))
 
         # -- Items and VAT
         w = QWidget()
@@ -98,31 +119,31 @@ class InvoiceDialog(QDialog):
         top = QFormLayout()
         self.vat = QComboBox()
         for key, (label, *_rest) in inv_cmds.VAT_TREATMENTS.items():
-            self.vat.addItem(label, key)
+            self.vat.addItem(tr(label), key)
         self.vat.setCurrentIndex(max(0, self.vat.findData(prefs.get("vat", "standard"))))
         self.reason = QLineEdit()
-        top.addRow("VAT:", self.vat)
-        top.addRow("Note on the invoice:", self.reason)
+        top.addRow(tr("VAT:"), self.vat)
+        top.addRow(tr("Note on the invoice:"), self.reason)
         self.f_items = top
         iv.addLayout(top)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Description", "Quantity", "Unit", "Unit price (net)", "VAT %"])
+        self.table.setHorizontalHeaderLabels([tr(s) for s in ("Description", "Quantity", "Unit", "Unit price (net)", "VAT %")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.itemChanged.connect(self._totals)
         iv.addWidget(self.table, 1)
         row = QHBoxLayout()
-        add, rem = QPushButton("Add line"), QPushButton("Remove line")
+        add, rem = QPushButton(tr("Add line")), QPushButton(tr("Remove line"))
         add.clicked.connect(lambda: self._add_line())
         rem.clicked.connect(lambda: self.table.removeRow(self.table.currentRow()) or self._totals())
         row.addWidget(add)
         row.addWidget(rem)
         row.addStretch(1)
-        self.paid = QCheckBox("Already paid")
+        self.paid = QCheckBox(tr("Already paid"))
         self.paid.toggled.connect(self._totals)
         row.addWidget(self.paid)
         iv.addLayout(row)
-        self.tabs.addTab(w, "Items && VAT")
+        self.tabs.addTab(w, tr("Items && VAT"))
 
         # -- Your details (remembered)
         w = QWidget()
@@ -139,47 +160,47 @@ class InvoiceDialog(QDialog):
                   "account_name": "Account holder:"}
         for k in SELLER_KEYS:
             if k == "contact":
-                f.addRow(QLabel("<b>Contact</b>"))
+                f.addRow(QLabel("<b>" + tr("Contact") + "</b>"))
             if k == "iban":
-                f.addRow(QLabel("<b>Bank account</b>"))
-            f.addRow(labels[k], self.s[k])
-        self.tabs.addTab(w, "Your Details")
+                f.addRow(QLabel("<b>" + tr("Bank account") + "</b>"))
+            f.addRow(tr(labels[k]), self.s[k])
+        self.tabs.addTab(w, tr("Your Details"))
 
         # -- Design and output
         w = QWidget()
         f = QFormLayout(w)
         self.design = QComboBox()
-        self.design.addItem("Classic", "classic")
-        self.design.addItem("Modern (coloured header)", "modern")
+        self.design.addItem(tr("Classic"), "classic")
+        self.design.addItem(tr("Modern (coloured header)"), "modern")
         self.design.setCurrentIndex(max(0, self.design.findData(prefs.get("design", "classic"))))
         self.lang = QComboBox()
         self.lang.addItem("Deutsch", "de")
         self.lang.addItem("English", "en")
         self.lang.setCurrentIndex(max(0, self.lang.findData(prefs.get("lang", "de"))))
-        self.accent = ColorButton(text="Accent colour")
-        acc = prefs.get("accent", "#6b2d7b")
+        self.accent = ColorButton(text=tr("Accent colour"))
+        acc = prefs.get("accent", theme.ACCENT)
         self.accent.set_color(tuple(int(acc[i:i + 2], 16) / 255 for i in (1, 3, 5)), emit=False)
-        self.logo = QLineEdit(prefs.get("logo", ""), placeholderText="PNG or JPEG (optional)")
-        pick = QPushButton("Choose…")
-        pick.clicked.connect(lambda: (p := QFileDialog.getOpenFileName(self, "Logo", "", "Images (*.png *.jpg *.jpeg)")[0])
+        self.logo = QLineEdit(prefs.get("logo", ""), placeholderText=tr("PNG or JPEG (optional)"))
+        pick = QPushButton(tr("Choose…"))
+        pick.clicked.connect(lambda: (p := QFileDialog.getOpenFileName(self, tr("Logo"), "", tr("Images (*.png *.jpg *.jpeg)"))[0])
                              and self.logo.setText(p))
         row = QHBoxLayout()
         row.addWidget(self.logo, 1)
         row.addWidget(pick)
         self.output = QComboBox()
         for key, label in OUTPUTS:
-            self.output.addItem(label, key)
-        f.addRow("Design:", self.design)
-        f.addRow("Language:", self.lang)
-        f.addRow("Accent colour:", self.accent)
-        f.addRow("Logo:", row)
-        f.addRow("Save as:", self.output)
-        self.tabs.addTab(w, "Design && Output")
+            self.output.addItem(tr(label), key)
+        f.addRow(tr("Design:"), self.design)
+        f.addRow(tr("Language:"), self.lang)
+        f.addRow(tr("Accent colour:"), self.accent)
+        f.addRow(tr("Logo:"), row)
+        f.addRow(tr("Save as:"), self.output)
+        self.tabs.addTab(w, tr("Design && Output"))
 
         self.total_label = QLabel()
         self.total_label.setStyleSheet("font-weight:bold;padding:4px")
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.button(QDialogButtonBox.Ok).setText("Create")
+        bb.button(QDialogButtonBox.Ok).setText(tr("Create"))
         bb.accepted.connect(self._accept)
         bb.rejected.connect(self.reject)
         bottom = QHBoxLayout()
@@ -211,7 +232,7 @@ class InvoiceDialog(QDialog):
             self.table.setItem(r, c, it)
         unit = QComboBox()
         for code, label in UNIT_CHOICES:
-            unit.addItem(label, code)
+            unit.addItem(tr(label), code)
         unit.setCurrentIndex(max(0, unit.findData(line.get("unit", "C62"))))
         self.table.setCellWidget(r, 2, unit)
         self.table.blockSignals(False)
@@ -246,7 +267,7 @@ class InvoiceDialog(QDialog):
         f.setRowVisible(self.b["leitweg"], public)
         f.setRowVisible(self.b["electronic_address"], public)
         need_buyer_vat = vat in ("reverse", "intra-eu")
-        f.labelForField(self.b["vat_id"]).setText("Customer VAT ID *:" if need_buyer_vat else "Customer VAT ID:")
+        f.labelForField(self.b["vat_id"]).setText(tr("Customer VAT ID *:") if need_buyer_vat else tr("Customer VAT ID:"))
         for k in ("contact", "phone", "email", "electronic_address"):
             lab = self.f_seller.labelForField(self.s[k])
             lab.setText(lab.text().rstrip(" *:").rstrip(":") + (" *:" if public else ":"))
@@ -299,9 +320,9 @@ class InvoiceDialog(QDialog):
             return
         t, cur = c["totals"], self.currency.currentText()
         lang = "en"
-        self.total_label.setText(f"Net {inv_cmds._fmt(t['line_total'], lang, cur)}   ·   VAT {inv_cmds._fmt(t['tax_total'], lang, cur)}"
-                                 f"   ·   Total {inv_cmds._fmt(t['grand_total'], lang, cur)}"
-                                 + ("   (paid)" if self.paid.isChecked() else ""))
+        self.total_label.setText(tr("Net {net}   ·   VAT {vat}   ·   Total {total}", net=inv_cmds._fmt(t["line_total"], lang, cur),
+                                    vat=inv_cmds._fmt(t["tax_total"], lang, cur), total=inv_cmds._fmt(t["grand_total"], lang, cur))
+                                 + ("   " + tr("(paid)") if self.paid.isChecked() else ""))
 
     def _missing(self, inv: dict) -> list[str]:
         out = []
@@ -311,31 +332,31 @@ class InvoiceDialog(QDialog):
                            ("customer name", b["name"]), ("customer city", b["city"]),
                            ("at least one item with a description", any(li["name"] for li in inv["lines"]))):
             if not val:
-                out.append(label)
+                out.append(tr(label))
         if not (s["vat_id"] or s["tax_number"]) and inv["vat_treatment"] != "not-subject":
-            out.append("your VAT ID or tax number")
+            out.append(tr("your VAT ID or tax number"))
         if inv["vat_treatment"] in ("reverse", "intra-eu", "export"):
             if not s["vat_id"]:
-                out.append("your VAT ID (needed for this VAT treatment)")
+                out.append(tr("your VAT ID (needed for this VAT treatment)"))
             if not b["vat_id"] and inv["vat_treatment"] != "export":
-                out.append("the customer's VAT ID (needed for this VAT treatment)")
+                out.append(tr("the customer's VAT ID (needed for this VAT treatment)"))
         if inv["xrechnung"]:
             for label, val in (("Leitweg-ID", inv["buyer_reference"]), ("customer e-invoice address", b["electronic_address"]),
                                ("contact person", s["contact"]), ("phone", s["phone"]), ("e-mail", s["email"]),
                                ("customer post code", b["zip"])):
                 if not val:
-                    out.append(label + " (XRechnung)")
+                    out.append(tr(label) + " (XRechnung)")
         if not inv["payment"]["iban"] and not self.paid.isChecked():
-            out.append("your IBAN (or tick Already paid)")
+            out.append(tr("your IBAN (or tick Already paid)"))
         if inv["type_code"] in ("381", "384") and not inv["preceding"]:
-            out.append("the invoice number this one refers to")
+            out.append(tr("the invoice number this one refers to"))
         return out
 
     def _accept(self):
         inv = self.values()
         miss = self._missing(inv)
         if miss:
-            QMessageBox.warning(self, "Create E-Invoice", "Please fill in:\n• " + "\n• ".join(miss))
+            QMessageBox.warning(self, tr("Create E-Invoice"), tr("Please fill in:") + "\n• " + "\n• ".join(miss))
             return
         if self.paid.isChecked():
             c = inv_cmds.compute(inv)
@@ -344,7 +365,7 @@ class InvoiceDialog(QDialog):
         st = _settings()
         st.setValue("invoice/seller", json.dumps({k: w.text().strip() for k, w in self.s.items()}))
         st.setValue("invoice/last_number", inv["number"])
-        r, g, b = (round(x * 255) for x in (self.accent.rgb or (0.42, 0.18, 0.48)))
+        r, g, b = (round(x * 255) for x in (self.accent.rgb or tuple(int(theme.ACCENT[i:i + 2], 16) / 255 for i in (1, 3, 5))))
         st.setValue("invoice/prefs", json.dumps({
             "design": self.design.currentData(), "lang": self.lang.currentData(), "accent": f"#{r:02x}{g:02x}{b:02x}",
             "logo": self.logo.text().strip(), "due_days": self.due_days.value(), "vat": self.vat.currentData()}))
@@ -366,16 +387,16 @@ ICONS = {"ok": ("✔", "#2e9e5b"), "warning": ("⚠", "#c77c00"), "error": ("✖
 def checks_html(checks) -> str:
     n_err = sum(1 for c in checks if c[0] == "error")
     n_warn = sum(1 for c in checks if c[0] == "warning")
-    head = ("<p style='color:#2e9e5b;font-size:13pt'><b>✔ No problems found</b></p>" if not n_err and not n_warn else
-            f"<p style='font-size:13pt'><b style='color:#d33a3a'>{n_err} error(s)</b>, "
-            f"<b style='color:#c77c00'>{n_warn} warning(s)</b></p>")
+    head = (f"<p style='color:#2e9e5b;font-size:13pt'><b>✔ {tr('No problems found')}</b></p>" if not n_err and not n_warn else
+            f"<p style='font-size:13pt'><b style='color:#d33a3a'>{tr('{n} error(s)', n=n_err)}</b>, "
+            f"<b style='color:#c77c00'>{tr('{n} warning(s)', n=n_warn)}</b></p>")
     order = {"error": 0, "warning": 1, "ok": 2}
     rows = "".join(f"<tr><td style='color:{ICONS[l][1]};padding:2px 6px'>{ICONS[l][0]}</td>"
                    f"<td style='color:#777;padding:2px 8px'>{html.escape(r)}</td><td>{html.escape(m)}</td></tr>"
                    for l, r, m in sorted(checks, key=lambda c: order[c[0]]))
-    return (head + f"<table cellspacing=0>{rows}</table><p style='color:#888;font-size:8pt'>These are the EN 16931 core "
-            "rules that can be checked without the official Schematron, plus XRechnung and PDF/A-3 packaging checks. "
-            "For a binding result use the KoSIT validator or the Mustang validator.</p>")
+    note = tr("These are the EN 16931 core rules that can be checked without the official Schematron, plus XRechnung "
+              "and PDF/A-3 packaging checks. For a binding result use the KoSIT validator or the Mustang validator.")
+    return head + f"<table cellspacing=0>{rows}</table><p style='color:#888;font-size:8pt'>{note}</p>"
 
 
 class InvoiceViewDialog(QDialog):
@@ -383,20 +404,20 @@ class InvoiceViewDialog(QDialog):
 
     def __init__(self, parent, inv: dict, checks, xml: bytes | None, lang: str = "de"):
         super().__init__(parent)
-        self.setWindowTitle(f"E-Invoice — {inv['standard']}")
+        self.setWindowTitle(tr("E-Invoice") + f" — {inv['standard']}")
         self.resize(820, 760)
         self.xml = xml
         v = QVBoxLayout(self)
-        info = QLabel(f"<b>{html.escape(inv['standard'])}</b> · {inv['syntax']} syntax"
-                      + (f" · file <i>{html.escape(inv.get('source', ''))}</i>" if inv.get("source") else ""))
+        info = QLabel(f"<b>{html.escape(inv['standard'])}</b> · {inv['syntax']} " + tr("syntax")
+                      + (" · " + tr("file") + f" <i>{html.escape(inv.get('source', ''))}</i>" if inv.get("source") else ""))
         v.addWidget(info)
         tabs = QTabWidget()
         page = QTextBrowser()
         page.setHtml(inv_cmds.to_html(inv, lang))
-        tabs.addTab(page, "Invoice")
+        tabs.addTab(page, tr("Invoice"))
         chk = QTextBrowser()
         chk.setHtml(checks_html(checks))
-        tabs.addTab(chk, "Check")
+        tabs.addTab(chk, tr("Check"))
         if xml:
             src = QTextBrowser()
             src.setPlainText(xml.decode("utf-8", "replace"))
@@ -404,21 +425,21 @@ class InvoiceViewDialog(QDialog):
             tabs.addTab(src, "XML")
         v.addWidget(tabs, 1)
         n_err = sum(1 for c in checks if c[0] == "error")
-        tabs.setTabText(1, f"Check ({n_err} error{'s' if n_err != 1 else ''})" if n_err else "Check ✔")
+        tabs.setTabText(1, tr("Check ({n} errors)", n=n_err) if n_err else tr("Check") + " ✔")
         row = QHBoxLayout()
         if xml:
-            b = QPushButton("Save XML…")
+            b = QPushButton(tr("Save XML…"))
             b.clicked.connect(self._save_xml)
             row.addWidget(b)
         row.addStretch(1)
-        close = QPushButton("Close")
+        close = QPushButton(tr("Close"))
         close.clicked.connect(self.accept)
         row.addWidget(close)
         v.addLayout(row)
         self.tabs = tabs
 
     def _save_xml(self):
-        p = QFileDialog.getSaveFileName(self, "Save XML", "invoice.xml", "XML (*.xml)")[0]
+        p = QFileDialog.getSaveFileName(self, tr("Save XML"), "invoice.xml", tr("XML (*.xml)"))[0]
         if p:
             with open(p, "wb") as f:
                 f.write(self.xml)

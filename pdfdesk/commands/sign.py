@@ -227,8 +227,8 @@ def validate(path: str, trusted_pfx: list[tuple[str, str]] | None = None, truste
 
     roots = []
     for pfx, pw in trusted_pfx or []:
-        from cryptography.hazmat.primitives.serialization import pkcs12
         from asn1crypto import x509 as ax509
+        from cryptography.hazmat.primitives.serialization import pkcs12
         _k, cert, _ = pkcs12.load_key_and_certificates(open(pfx, "rb").read(), pw.encode())
         from cryptography.hazmat.primitives.serialization import Encoding
         roots.append(ax509.Certificate.load(cert.public_bytes(Encoding.DER)))

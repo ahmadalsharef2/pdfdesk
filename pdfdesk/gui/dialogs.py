@@ -7,13 +7,43 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import fonts
+from ..lang import tr
 
 DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "pdfdesk"
 IDS = DATA / "ids"
@@ -42,7 +72,7 @@ class TextDialog(QDialog):
         self.size = None
         if size is not None:
             row = QHBoxLayout()
-            row.addWidget(QLabel("Font size:"))
+            row.addWidget(QLabel(tr("Font size:")))
             self.size = QDoubleSpinBox(minimum=4, maximum=144, value=size)
             row.addWidget(self.size)
             row.addStretch()
@@ -95,7 +125,7 @@ def fill_color_menu(m: QMenu, pick, current=None, none_label: str | None = None)
         c = QColorDialog.getColor(qcolor(current) if current else QColor(255, 220, 0), m.parentWidget(), "Color")
         if c.isValid():
             pick((c.redF(), c.greenF(), c.blueF()))
-    m.addAction("More colors…", more)
+    m.addAction(tr("More colors…"), more)
 
 
 class ColorButton(QToolButton):
@@ -140,21 +170,21 @@ class CommentPropertiesDialog(QDialog):
         self.color = self.text_color = self.fill = self.width = self.size = None
         if "color" in fields:
             self.color = ColorButton(st["color"])
-            f.addRow("Color:", self.color)
+            f.addRow(tr("Color:"), self.color)
         if "text_color" in fields:
             self.text_color = ColorButton(st["text_color"])
-            f.addRow("Text color:", self.text_color)
+            f.addRow(tr("Text color:"), self.text_color)
         if "fontsize" in fields:
             self.size = QDoubleSpinBox(minimum=4, maximum=144, value=st["fontsize"], decimals=1)
-            f.addRow("Font size:", self.size)
+            f.addRow(tr("Font size:"), self.size)
         if "fill" in fields:
             self.fill = ColorButton(st["fill"], none_label="No fill")
-            f.addRow("Fill:", self.fill)
+            f.addRow(tr("Fill:"), self.fill)
         if "width" in fields:
             self.width = QDoubleSpinBox(minimum=0, maximum=20, value=st["width"], singleStep=0.5, decimals=1)
-            f.addRow("Line width:", self.width)
+            f.addRow(tr("Line width:"), self.width)
         self.opacity = QSpinBox(minimum=5, maximum=100, value=round(st["opacity"] * 100), suffix=" %")
-        f.addRow("Opacity:", self.opacity)
+        f.addRow(tr("Opacity:"), self.opacity)
         v.addLayout(f)
         _buttons(self, v)
 
@@ -229,24 +259,24 @@ class SignerDetails(QGroupBox):
               "phone": "Phone", "address": "Address", "date": "Date (signing day)"}
 
     def __init__(self, default_name: str = ""):
-        super().__init__("Details under the signature")
+        super().__init__(tr("Details under the signature"))
         prof = signer_profile()
         prof.setdefault("name", default_name)
         show = set(prof.get("show", ()))
         g = QGridLayout(self)
         self.checks, self.edits = {}, {}
         for i, (k, label) in enumerate(self.LABELS.items()):
-            self.checks[k] = QCheckBox(label, checked=k in show)
+            self.checks[k] = QCheckBox(tr(label), checked=k in show)
             g.addWidget(self.checks[k], i, 0)
             if k != "date":
                 self.edits[k] = QLineEdit(prof.get(k, ""))
                 self.edits[k].textEdited.connect(lambda _t, c=self.checks[k]: c.setChecked(True))
                 g.addWidget(self.edits[k], i, 1)
         self.layout_box = QComboBox()
-        self.layout_box.addItem("One detail per line", "lines")
-        self.layout_box.addItem("Compact: two lines", "compact")
+        self.layout_box.addItem(tr("One detail per line"), "lines")
+        self.layout_box.addItem(tr("Compact: two lines"), "compact")
         self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(prof.get("layout", "lines"))))
-        g.addWidget(QLabel("Layout"), len(self.LABELS), 0)
+        g.addWidget(QLabel(tr("Layout")), len(self.LABELS), 0)
         g.addWidget(self.layout_box, len(self.LABELS), 1)
         g.setColumnStretch(1, 1)
 
@@ -274,7 +304,7 @@ def save_signer_profile(prof: dict):
 class SignerDialog(QDialog):
     def __init__(self, parent, default_name: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Signer Details")
+        self.setWindowTitle(tr("Signer Details"))
         v = QVBoxLayout(self)
         self.details = SignerDetails(default_name)
         v.addWidget(self.details)
@@ -292,13 +322,13 @@ class SignatureDialog(QDialog):
 
     def __init__(self, parent, default_name: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Create Signature")
+        self.setWindowTitle(tr("Create Signature"))
         v = QVBoxLayout(self)
         self.tabs = QTabWidget()
         # type
         tw = QWidget()
         tl = QVBoxLayout(tw)
-        self.name = QLineEdit(default_name, placeholderText="Your name")
+        self.name = QLineEdit(default_name, placeholderText=tr("Your name"))
         self.preview = QLabel()
         self.preview.setMinimumHeight(80)
         self.preview.setAlignment(Qt.AlignCenter)
@@ -317,37 +347,37 @@ class SignatureDialog(QDialog):
         self.preview.setText(default_name)
         tl.addWidget(self.name)
         tl.addWidget(self.preview)
-        self.tabs.addTab(tw, "Type")
+        self.tabs.addTab(tw, tr("Type"))
         # draw
         dw = QWidget()
         dl = QVBoxLayout(dw)
         self.pad = DrawPad()
-        clear = QPushButton("Clear")
+        clear = QPushButton(tr("Clear"))
         clear.clicked.connect(self.pad.clear)
         dl.addWidget(self.pad)
         dl.addWidget(clear, alignment=Qt.AlignRight)
-        self.tabs.addTab(dw, "Draw")
+        self.tabs.addTab(dw, tr("Draw"))
         # image
         iw = QWidget()
         il = QVBoxLayout(iw)
         self.img_path = None
-        self.img_label = QLabel("No image chosen")
+        self.img_label = QLabel(tr("No image chosen"))
         self.img_label.setMinimumHeight(100)
         self.img_label.setAlignment(Qt.AlignCenter)
-        pick = QPushButton("Choose image…")
+        pick = QPushButton(tr("Choose image…"))
         pick.clicked.connect(self._pick)
         il.addWidget(self.img_label)
         il.addWidget(pick, alignment=Qt.AlignRight)
-        self.tabs.addTab(iw, "Image")
+        self.tabs.addTab(iw, tr("Image"))
         v.addWidget(self.tabs)
         self.details = SignerDetails(default_name)
         v.addWidget(self.details)
-        self.save = QCheckBox("Save this signature for next time", checked=True)
+        self.save = QCheckBox(tr("Save this signature for next time"), checked=True)
         v.addWidget(self.save)
         _buttons(self, v)
 
     def _pick(self):
-        p = QFileDialog.getOpenFileName(self, "Signature image", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif)")[0]
+        p = QFileDialog.getOpenFileName(self, tr("Signature image"), "", tr("Images (*.png *.jpg *.jpeg *.bmp *.gif)"))[0]
         if p:
             self.img_path = p
             self.img_label.setPixmap(QPixmap(p).scaled(360, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -372,7 +402,7 @@ class SignatureDialog(QDialog):
                 if d.save.isChecked():
                     save_signature(s)
                 return s
-            QMessageBox.information(d, "Signature", "Type a name, draw a signature or choose an image first.")
+            QMessageBox.information(d, tr("Signature"), tr("Type a name, draw a signature or choose an image first."))
         return None
 
 
@@ -390,27 +420,27 @@ def save_signature(spec: dict):
 
 
 def describe_signature(s: dict) -> str:
-    return {"typed": f"Typed: {s.get('name')}", "ink": "Drawn signature",
-            "image": f"Image: {os.path.basename(s.get('path', ''))}"}[s["kind"]]
+    return {"typed": tr("Typed: {name}", name=s.get("name")), "ink": tr("Drawn signature"),
+            "image": tr("Image: {name}", name=os.path.basename(s.get("path", "")))}[s["kind"]]
 
 
 # ---- digital IDs and signing --------------------------------------------------------------------------
 class CreateIDDialog(QDialog):
     def __init__(self, parent, name=""):
         super().__init__(parent)
-        self.setWindowTitle("Create Digital ID (self-signed)")
+        self.setWindowTitle(tr("Create Digital ID (self-signed)"))
         f = QFormLayout(self)
         self.name = QLineEdit(name)
         self.email = QLineEdit()
         self.org = QLineEdit()
         self.pw = QLineEdit(echoMode=QLineEdit.Password)
         self.pw2 = QLineEdit(echoMode=QLineEdit.Password)
-        f.addRow("Name:", self.name)
-        f.addRow("Email:", self.email)
-        f.addRow("Organization:", self.org)
-        f.addRow("Password:", self.pw)
-        f.addRow("Confirm password:", self.pw2)
-        f.addRow(QLabel(f"Saved in {IDS}"))
+        f.addRow(tr("Name:"), self.name)
+        f.addRow(tr("Email:"), self.email)
+        f.addRow(tr("Organization:"), self.org)
+        f.addRow(tr("Password:"), self.pw)
+        f.addRow(tr("Confirm password:"), self.pw2)
+        f.addRow(QLabel(tr("Saved in {path}", path=IDS)))
         _buttons(self, f)
 
     @staticmethod
@@ -419,10 +449,10 @@ class CreateIDDialog(QDialog):
         d = CreateIDDialog(parent, name)
         while d.exec() == QDialog.Accepted:
             if not d.name.text().strip() or not d.pw.text():
-                QMessageBox.warning(d, "Digital ID", "Name and password are required.")
+                QMessageBox.warning(d, tr("Digital ID"), tr("Name and password are required."))
                 continue
             if d.pw.text() != d.pw2.text():
-                QMessageBox.warning(d, "Digital ID", "The passwords do not match.")
+                QMessageBox.warning(d, tr("Digital ID"), tr("The passwords do not match."))
                 continue
             safe = "".join(c if c.isalnum() else "_" for c in d.name.text().strip())
             path = str(IDS / f"{safe}.pfx")
@@ -439,32 +469,32 @@ class CreateIDDialog(QDialog):
 class DigitalSignDialog(QDialog):
     def __init__(self, parent, certify_default=False, name=""):
         super().__init__(parent)
-        self.setWindowTitle("Certify Document" if certify_default else "Sign Document")
+        self.setWindowTitle(tr("Certify Document") if certify_default else tr("Sign Document"))
         self._name = name
         f = QFormLayout(self)
         row = QHBoxLayout()
         self.ids = QComboBox()
         self._load_ids()
-        browse = QPushButton("Browse…")
+        browse = QPushButton(tr("Browse…"))
         browse.clicked.connect(self._browse)
-        new = QPushButton("New ID…")
+        new = QPushButton(tr("New ID…"))
         new.clicked.connect(self._new)
         row.addWidget(self.ids, 1)
         row.addWidget(browse)
         row.addWidget(new)
-        f.addRow("Digital ID:", row)
+        f.addRow(tr("Digital ID:"), row)
         self.pw = QLineEdit(echoMode=QLineEdit.Password)
-        f.addRow("Password:", self.pw)
-        self.reason = QLineEdit("I am the author of this document" if certify_default else "I approve this document")
+        f.addRow(tr("Password:"), self.pw)
+        self.reason = QLineEdit(tr("I am the author of this document") if certify_default else tr("I approve this document"))
         self.location = QLineEdit()
-        f.addRow("Reason:", self.reason)
-        f.addRow("Location:", self.location)
+        f.addRow(tr("Reason:"), self.reason)
+        f.addRow(tr("Location:"), self.location)
         self.kind = QComboBox()
-        self.kind.addItems(["Sign", "Certify: no changes allowed", "Certify: form filling and signing",
-                            "Certify: form filling, signing and commenting"])
+        self.kind.addItems([tr(s) for s in ("Sign", "Certify: no changes allowed", "Certify: form filling and signing",
+                                            "Certify: form filling, signing and commenting")])
         self.kind.setCurrentIndex(2 if certify_default else 0)
-        f.addRow("Type:", self.kind)
-        self.invisible = QCheckBox("Invisible signature (no box on the page)")
+        f.addRow(tr("Type:"), self.kind)
+        self.invisible = QCheckBox(tr("Invisible signature (no box on the page)"))
         f.addRow(self.invisible)
         _buttons(self, f)
 
@@ -483,7 +513,7 @@ class DigitalSignDialog(QDialog):
                 break
 
     def _browse(self):
-        p = QFileDialog.getOpenFileName(self, "Digital ID", str(Path.home()), "Digital ID (*.pfx *.p12)")[0]
+        p = QFileDialog.getOpenFileName(self, tr("Digital ID"), str(Path.home()), tr("Digital ID (*.pfx *.p12)"))[0]
         if p:
             self._load_ids(p)
 
@@ -503,7 +533,7 @@ class DigitalSignDialog(QDialog):
         while d.exec() == QDialog.Accepted:
             v = d.values()
             if not v["pfx"]:
-                QMessageBox.warning(d, "Sign", "Choose or create a digital ID first.")
+                QMessageBox.warning(d, tr("Sign"), tr("Choose or create a digital ID first."))
                 continue
             from pyhanko.sign import signers
             try:
@@ -511,7 +541,7 @@ class DigitalSignDialog(QDialog):
             except Exception:  # noqa: BLE001
                 ok = False
             if not ok:
-                QMessageBox.warning(d, "Sign", "Could not open the digital ID. Check the password.")
+                QMessageBox.warning(d, tr("Sign"), tr("Could not open the digital ID. Check the password."))
                 continue
             QSettings("pdfdesk", "pdfdesk").setValue("last_id", v["pfx"])
             return v
@@ -522,36 +552,36 @@ class DigitalSignDialog(QDialog):
 class PasswordDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Password Protect")
+        self.setWindowTitle(tr("Password Protect"))
         v = QVBoxLayout(self)
-        g1 = QGroupBox("Document open")
+        g1 = QGroupBox(tr("Document open"))
         f1 = QFormLayout(g1)
-        self.require_open = QCheckBox("Require a password to open the document", checked=True)
+        self.require_open = QCheckBox(tr("Require a password to open the document"), checked=True)
         self.user = QLineEdit(echoMode=QLineEdit.Password)
         self.user2 = QLineEdit(echoMode=QLineEdit.Password)
         f1.addRow(self.require_open)
-        f1.addRow("Open password:", self.user)
-        f1.addRow("Confirm:", self.user2)
+        f1.addRow(tr("Open password:"), self.user)
+        f1.addRow(tr("Confirm:"), self.user2)
         self.require_open.toggled.connect(self.user.setEnabled)
         self.require_open.toggled.connect(self.user2.setEnabled)
         v.addWidget(g1)
-        g2 = QGroupBox("Permissions")
+        g2 = QGroupBox(tr("Permissions"))
         f2 = QFormLayout(g2)
         self.owner = QLineEdit(echoMode=QLineEdit.Password)
         self.owner2 = QLineEdit(echoMode=QLineEdit.Password)
-        f2.addRow("Permissions password:", self.owner)
-        f2.addRow("Confirm:", self.owner2)
-        self.p_print = QCheckBox("Allow printing", checked=True)
-        self.p_copy = QCheckBox("Allow copying text and images", checked=True)
-        self.p_annot = QCheckBox("Allow comments and form filling", checked=True)
-        self.p_modify = QCheckBox("Allow changing the document", checked=False)
+        f2.addRow(tr("Permissions password:"), self.owner)
+        f2.addRow(tr("Confirm:"), self.owner2)
+        self.p_print = QCheckBox(tr("Allow printing"), checked=True)
+        self.p_copy = QCheckBox(tr("Allow copying text and images"), checked=True)
+        self.p_annot = QCheckBox(tr("Allow comments and form filling"), checked=True)
+        self.p_modify = QCheckBox(tr("Allow changing the document"), checked=False)
         for w in (self.p_print, self.p_copy, self.p_annot, self.p_modify):
             f2.addRow(w)
         v.addWidget(g2)
         row = QHBoxLayout()
-        row.addWidget(QLabel("Encryption:"))
+        row.addWidget(QLabel(tr("Encryption:")))
         self.method = QComboBox()
-        self.method.addItems(["AES-256", "AES-128", "RC4-128"])
+        self.method.addItems([tr(s) for s in ("AES-256", "AES-128", "RC4-128")])
         row.addWidget(self.method)
         row.addStretch()
         v.addLayout(row)
@@ -564,13 +594,13 @@ class PasswordDialog(QDialog):
         while d.exec() == QDialog.Accepted:
             user = d.user.text() if d.require_open.isChecked() else ""
             if d.require_open.isChecked() and (not user or user != d.user2.text()):
-                QMessageBox.warning(d, "Password", "Enter the open password twice.")
+                QMessageBox.warning(d, tr("Password"), tr("Enter the open password twice."))
                 continue
             if not d.owner.text() or d.owner.text() != d.owner2.text():
-                QMessageBox.warning(d, "Password", "Enter the permissions password twice.")
+                QMessageBox.warning(d, tr("Password"), tr("Enter the permissions password twice."))
                 continue
             if d.owner.text() == user:
-                QMessageBox.warning(d, "Password", "The permissions password must differ from the open password.")
+                QMessageBox.warning(d, tr("Password"), tr("The permissions password must differ from the open password."))
                 continue
             return sec.Security(user, d.owner.text(),
                                 sec.permissions(d.p_print.isChecked(), d.p_copy.isChecked(), d.p_modify.isChecked(),
@@ -583,28 +613,28 @@ class PasswordDialog(QDialog):
 class HeaderFooterDialog(QDialog):
     def __init__(self, parent, bates=False):
         super().__init__(parent)
-        self.setWindowTitle("Bates Numbering" if bates else "Header & Footer")
+        self.setWindowTitle(tr("Bates Numbering") if bates else tr("Header & Footer"))
         v = QVBoxLayout(self)
         grid = QGridLayout()
         self.fields = {}
         for r, row in enumerate(("Header", "Footer")):
-            grid.addWidget(QLabel(row), r * 2, 0)
+            grid.addWidget(QLabel(tr(row)), r * 2, 0)
             for c, col in enumerate(("Left", "Center", "Right")):
-                grid.addWidget(QLabel(col), r * 2, c + 1)
+                grid.addWidget(QLabel(tr(col)), r * 2, c + 1)
                 e = QLineEdit()
                 self.fields[(row, col)] = e
                 grid.addWidget(e, r * 2 + 1, c + 1)
         v.addLayout(grid)
-        v.addWidget(QLabel("Macros: <<page>>  <<total>>  <<bates>>"))
+        v.addWidget(QLabel(tr("Macros: <<page>>  <<total>>  <<bates>>")))
         f = QFormLayout()
         self.size = QDoubleSpinBox(minimum=4, maximum=72, value=10)
         self.margin = QDoubleSpinBox(minimum=0, maximum=200, value=36)
-        self.pages = QLineEdit(placeholderText="all (e.g. 1-3,7, odd, even)")
-        f.addRow("Font size:", self.size)
-        f.addRow("Margin (pt):", self.margin)
-        f.addRow("Pages:", self.pages)
+        self.pages = QLineEdit(placeholderText=tr("all (e.g. 1-3,7, odd, even)"))
+        f.addRow(tr("Font size:"), self.size)
+        f.addRow(tr("Margin (pt):"), self.margin)
+        f.addRow(tr("Pages:"), self.pages)
         v.addLayout(f)
-        self.bates_box = QGroupBox("Bates number")
+        self.bates_box = QGroupBox(tr("Bates number"))
         self.bates_box.setCheckable(True)
         self.bates_box.setChecked(bates)
         bf = QFormLayout(self.bates_box)
@@ -613,16 +643,16 @@ class HeaderFooterDialog(QDialog):
         self.digits = QSpinBox(minimum=3, maximum=15, value=6)
         self.start = QSpinBox(minimum=0, maximum=10**9, value=1)
         self.increment = QSpinBox(minimum=-1000, maximum=1000, value=1)
-        bf.addRow("Prefix:", self.prefix)
-        bf.addRow("Suffix:", self.suffix)
-        bf.addRow("Digits:", self.digits)
-        bf.addRow("Start:", self.start)
-        bf.addRow("Increment:", self.increment)
+        bf.addRow(tr("Prefix:"), self.prefix)
+        bf.addRow(tr("Suffix:"), self.suffix)
+        bf.addRow(tr("Digits:"), self.digits)
+        bf.addRow(tr("Start:"), self.start)
+        bf.addRow(tr("Increment:"), self.increment)
         v.addWidget(self.bates_box)
         if bates:
             self.fields[("Footer", "Right")].setText("<<bates>>")
         else:
-            self.fields[("Footer", "Center")].setText("Page <<page>> of <<total>>")
+            self.fields[("Footer", "Center")].setText(tr("Page <<page>> of <<total>>"))
         _buttons(self, v)
 
     def values(self) -> dict:
@@ -639,20 +669,20 @@ class HeaderFooterDialog(QDialog):
 class WatermarkDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Add Watermark")
+        self.setWindowTitle(tr("Add Watermark"))
         f = QFormLayout(self)
-        self.text = QLineEdit("CONFIDENTIAL")
+        self.text = QLineEdit(tr("CONFIDENTIAL"))
         self.size = QDoubleSpinBox(minimum=6, maximum=300, value=60)
         self.rot = QDoubleSpinBox(minimum=-180, maximum=180, value=45)
         self.opacity = QDoubleSpinBox(minimum=0.05, maximum=1, singleStep=0.05, value=0.3)
-        self.behind = QCheckBox("Behind page content")
-        self.pages = QLineEdit(placeholderText="all")
-        f.addRow("Text:", self.text)
-        f.addRow("Font size:", self.size)
-        f.addRow("Rotation:", self.rot)
-        f.addRow("Opacity:", self.opacity)
+        self.behind = QCheckBox(tr("Behind page content"))
+        self.pages = QLineEdit(placeholderText=tr("all"))
+        f.addRow(tr("Text:"), self.text)
+        f.addRow(tr("Font size:"), self.size)
+        f.addRow(tr("Rotation:"), self.rot)
+        f.addRow(tr("Opacity:"), self.opacity)
         f.addRow(self.behind)
-        f.addRow("Pages:", self.pages)
+        f.addRow(tr("Pages:"), self.pages)
         _buttons(self, f)
 
     def values(self):
@@ -663,25 +693,25 @@ class WatermarkDialog(QDialog):
 class PropertiesDialog(QDialog):
     def __init__(self, parent, doc, path):
         super().__init__(parent)
-        self.setWindowTitle("Document Properties")
+        self.setWindowTitle(tr("Document Properties"))
         f = QFormLayout(self)
         m = doc.metadata or {}
         self.edits = {}
-        for key in ("title", "author", "subject", "keywords"):
+        for key, label in (("title", "Title"), ("author", "Author"), ("subject", "Subject"), ("keywords", "Keywords")):
             e = QLineEdit(m.get(key, "") or "")
             self.edits[key] = e
-            f.addRow(key.capitalize() + ":", e)
-        info = [("File", path or "(not saved)"), ("Pages", str(doc.page_count)),
+            f.addRow(tr(label) + ":", e)
+        info = [("File", path or tr("(not saved)")), ("Pages", str(doc.page_count)),
                 ("Page size", f"{doc[0].rect.width:.0f} × {doc[0].rect.height:.0f} pt" if doc.page_count else ""),
                 ("Producer", m.get("producer", "")), ("Creator", m.get("creator", "")),
-                ("PDF format", m.get("format", "")), ("Encryption", m.get("encryption") or "none"),
+                ("PDF format", m.get("format", "")), ("Encryption", m.get("encryption") or tr("none")),
                 ("Fonts", ", ".join(sorted({f[3].split('+')[-1] for p in doc.pages(0, min(doc.page_count, 30))
                                             for f in p.get_fonts()}))[:300])]
         for k, val in info:
             lab = QLabel(val)
             lab.setWordWrap(True)
             lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            f.addRow(k + ":", lab)
+            f.addRow(tr(k) + ":", lab)
         _buttons(self, f)
 
     def values(self):
@@ -691,15 +721,15 @@ class PropertiesDialog(QDialog):
 class SplitDialog(QDialog):
     def __init__(self, parent, has_bookmarks: bool):
         super().__init__(parent)
-        self.setWindowTitle("Split Document")
+        self.setWindowTitle(tr("Split Document"))
         f = QFormLayout(self)
         self.mode = QComboBox()
-        self.mode.addItems(["Every N pages", "Top-level bookmarks"])
+        self.mode.addItems([tr(s) for s in ("Every N pages", "Top-level bookmarks")])
         if not has_bookmarks:
             self.mode.model().item(1).setEnabled(False)
         self.n = QSpinBox(minimum=1, maximum=100000, value=1)
-        f.addRow("Split by:", self.mode)
-        f.addRow("Pages per file:", self.n)
+        f.addRow(tr("Split by:"), self.mode)
+        f.addRow(tr("Pages per file:"), self.n)
         _buttons(self, f)
 
     def values(self):
@@ -710,11 +740,11 @@ class LayersDialog(QDialog):
     """Show or hide optional-content layers."""
     def __init__(self, parent, layers: list[dict]):
         super().__init__(parent)
-        self.setWindowTitle("Layers")
+        self.setWindowTitle(tr("Layers"))
         lay = QVBoxLayout(self)
         self.boxes = []
         if not layers:
-            lay.addWidget(QLabel("This document has no layers."))
+            lay.addWidget(QLabel(tr("This document has no layers.")))
         for ly in layers:
             b = QCheckBox(ly["name"])
             b.setChecked(ly["on"])
@@ -733,7 +763,7 @@ class FolderSearchDialog(QDialog):
         super().__init__(parent)
         from PySide6.QtWidgets import QListWidget, QListWidgetItem
         self._item = QListWidgetItem
-        self.setWindowTitle("Advanced Search")
+        self.setWindowTitle(tr("Advanced Search"))
         self.resize(720, 480)
         self.open_hit = open_hit
         lay = QVBoxLayout(self)
@@ -741,21 +771,21 @@ class FolderSearchDialog(QDialog):
         self.text = QLineEdit()
         row = QHBoxLayout()
         self.folder = QLineEdit(str(Path.home() / "Documents"))
-        pick = QPushButton("Browse…")
-        pick.clicked.connect(lambda: (d := QFileDialog.getExistingDirectory(self, "Folder", self.folder.text()))
+        pick = QPushButton(tr("Browse…"))
+        pick.clicked.connect(lambda: (d := QFileDialog.getExistingDirectory(self, tr("Folder"), self.folder.text()))
                              and self.folder.setText(d))
         row.addWidget(self.folder)
         row.addWidget(pick)
-        f.addRow("Find:", self.text)
-        f.addRow("In folder:", row)
+        f.addRow(tr("Find:"), self.text)
+        f.addRow(tr("In folder:"), row)
         opts = QHBoxLayout()
-        self.sub, self.word, self.case = QCheckBox("Include subfolders"), QCheckBox("Whole words"), QCheckBox("Match case")
+        self.sub, self.word, self.case = QCheckBox(tr("Include subfolders")), QCheckBox(tr("Whole words")), QCheckBox(tr("Match case"))
         self.sub.setChecked(True)
         for b in (self.sub, self.word, self.case):
             opts.addWidget(b)
         f.addRow("", opts)
         lay.addLayout(f)
-        go = QPushButton("Search")
+        go = QPushButton(tr("Search"))
         go.setDefault(True)
         go.clicked.connect(self.search)
         self.text.returnPressed.connect(self.search)
@@ -770,9 +800,9 @@ class FolderSearchDialog(QDialog):
         from ..commands import run
         t = self.text.text().strip()
         if not t or not os.path.isdir(self.folder.text()):
-            self.status.setText("Enter text and an existing folder.")
+            self.status.setText(tr("Enter text and an existing folder."))
             return
-        self.status.setText("Searching…")
+        self.status.setText(tr("Searching…"))
         self.repaint()
         hits = run("Search.Folder", self.folder.text(), t, recursive=self.sub.isChecked(),
                    whole_word=self.word.isChecked(), case=self.case.isChecked())
@@ -786,7 +816,7 @@ class FolderSearchDialog(QDialog):
                 it.setData(Qt.UserRole, (h["path"], h["page"]))
                 files.add(h["path"])
             self.results.addItem(it)
-        self.status.setText(f"{sum(1 for h in hits if h['page'])} matches in {len(files)} file(s)")
+        self.status.setText(tr("{n} matches in {files} file(s)", n=sum(1 for h in hits if h["page"]), files=len(files)))
 
 
 # ---- object position and size ------------------------------------------------------------------------------
@@ -796,18 +826,18 @@ class GeometryDialog(QDialog):
 
     def __init__(self, parent, rect):
         super().__init__(parent)
-        self.setWindowTitle("Position & Size")
+        self.setWindowTitle(tr("Position & Size"))
         self.ratio = rect.width / rect.height if rect.height else 1
         f = QFormLayout(self)
         self.x, self.y, self.w, self.h = (QDoubleSpinBox(decimals=1, minimum=-2000, maximum=5000, suffix=" mm")
                                           for _ in range(4))
         for sb, v in ((self.x, rect.x0), (self.y, rect.y0), (self.w, rect.width), (self.h, rect.height)):
             sb.setValue(v / self.MM)
-        self.keep = QCheckBox("Keep proportions", checked=True)
+        self.keep = QCheckBox(tr("Keep proportions"), checked=True)
         self.w.valueChanged.connect(lambda v: self.keep.isChecked() and self._sync(self.h, v / self.ratio))
         self.h.valueChanged.connect(lambda v: self.keep.isChecked() and self._sync(self.w, v * self.ratio))
         for label, w in (("Left:", self.x), ("Top:", self.y), ("Width:", self.w), ("Height:", self.h)):
-            f.addRow(label, w)
+            f.addRow(tr(label), w)
         f.addRow("", self.keep)
         _buttons(self, f)
 
@@ -826,3 +856,190 @@ class GeometryDialog(QDialog):
         m = GeometryDialog.MM
         x, y = d.x.value() * m, d.y.value() * m
         return pymupdf.Rect(x, y, x + max(d.w.value(), 0.5) * m, y + max(d.h.value(), 0.5) * m)
+
+
+# ---- automatic redaction ----------------------------------------------------------------------------------
+class AutoRedactDialog(QDialog):
+    """Find personal data in the whole document and pick what to mark. Scanned pages are read with OCR when
+    asked, so the hits are blacked out of the image as well."""
+
+    def __init__(self, parent, kinds: list[str], find, has_scans: bool):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QProgressBar, QTreeWidget, QTreeWidgetItem
+        self._item = QTreeWidgetItem
+        self.find = find                     # find(kinds, ocr_scans, languages, progress) -> items
+        self.items: list[dict] = []
+        self.apply_now = False
+        self.setWindowTitle(tr("Auto Redact"))
+        self.resize(760, 560)
+        v = QVBoxLayout(self)
+        box = QGroupBox(tr("Look for"))
+        g = QGridLayout(box)
+        self.kinds = {}
+        for n, k in enumerate(kinds):
+            self.kinds[k] = QCheckBox(tr(k), checked=True)
+            g.addWidget(self.kinds[k], n // 3, n % 3)
+        v.addWidget(box)
+        row = QHBoxLayout()
+        self.ocr = QCheckBox(tr("Also read scanned pages (OCR)"), checked=has_scans)
+        from .. import lang
+        self.langs = QLineEdit(lang.ocr_languages())
+        self.langs.setFixedWidth(110)
+        self.langs.setToolTip(tr("OCR languages, e.g. en, de, ar+en"))
+        row.addWidget(self.ocr)
+        row.addWidget(QLabel(tr("Languages:")))
+        row.addWidget(self.langs)
+        row.addStretch(1)
+        self.go = QPushButton(tr("Find"))
+        self.go.setDefault(True)
+        self.go.clicked.connect(self.search)
+        row.addWidget(self.go)
+        v.addLayout(row)
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+        v.addWidget(self.progress)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels([tr("Found"), tr("Page")])
+        self.tree.setColumnWidth(0, 560)
+        v.addWidget(self.tree, 1)
+        self.status = QLabel(tr("Press Find to search the document."))
+        v.addWidget(self.status)
+        bb = QDialogButtonBox()
+        self.mark = bb.addButton(tr("Mark selected"), QDialogButtonBox.AcceptRole)
+        self.mark_apply = bb.addButton(tr("Mark and apply"), QDialogButtonBox.AcceptRole)
+        bb.addButton(QDialogButtonBox.Cancel)
+        self.mark_apply.clicked.connect(lambda: setattr(self, "apply_now", True))
+        bb.accepted.connect(self._accept)
+        bb.rejected.connect(self.reject)
+        for b in (self.mark, self.mark_apply):
+            b.setEnabled(False)
+        v.addWidget(bb)
+
+    def search(self):
+        from PySide6.QtWidgets import QApplication
+        kinds = [k for k, c in self.kinds.items() if c.isChecked()]
+        langs = [x for x in self.langs.text().replace(",", "+").split("+") if x.strip()] or ["en"]
+        self.go.setEnabled(False)
+        self.progress.setVisible(True)
+        self.status.setText(tr("Searching…"))
+
+        def progress(n, total):
+            self.progress.setMaximum(total)
+            self.progress.setValue(n)
+            QApplication.processEvents()
+        try:
+            found = self.find(kinds, self.ocr.isChecked(), langs, progress)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, tr("Auto Redact"), str(e))
+            found = []
+        self.go.setEnabled(True)
+        self.progress.setVisible(False)
+        self._found = found
+        self.tree.clear()
+        groups = {}
+        for n, it in enumerate(found):
+            parent = groups.get(it["kind"])
+            if parent is None:
+                parent = groups[it["kind"]] = self._item(self.tree, [tr(it["kind"])])
+                parent.setFlags(parent.flags() | Qt.ItemIsAutoTristate | Qt.ItemIsUserCheckable)
+                parent.setExpanded(True)
+            row = self._item(parent, [it["text"] + ("  (" + tr("scan") + ")" if it["scanned"] else ""), str(it["page"])])
+            row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
+            row.setCheckState(0, Qt.Checked)
+            row.setData(0, Qt.UserRole, n)
+        for p in groups.values():
+            p.setCheckState(0, Qt.Checked)
+        self.status.setText(tr("{n} item(s) found. Untick what should stay.", n=len(found)) if found
+                            else tr("Nothing found."))
+        for b in (self.mark, self.mark_apply):
+            b.setEnabled(bool(found))
+
+    def _accept(self):
+        self.items = []
+        for g in range(self.tree.topLevelItemCount()):
+            parent = self.tree.topLevelItem(g)
+            for r in range(parent.childCount()):
+                row = parent.child(r)
+                if row.checkState(0) == Qt.Checked:
+                    self.items.append(self._found[row.data(0, Qt.UserRole)])
+        self.accept()
+
+
+# ---- combine files ---------------------------------------------------------------------------------------
+class CombineDialog(QDialog):
+    """The files to combine, in order: drag to reorder, or use the buttons. Each file becomes one bookmark."""
+
+    def __init__(self, parent, paths: list[str]):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QAbstractItemView, QListWidget
+        self.setWindowTitle(tr("Combine Files"))
+        self.resize(620, 420)
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel(tr("The files are combined in this order. Drag them to change it.")))
+        row = QHBoxLayout()
+        self.list = QListWidget()
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        row.addWidget(self.list, 1)
+        side = QVBoxLayout()
+        for text, fn in ((tr("Add Files…"), self.add), (tr("Remove"), self.remove), (tr("Move Up"), lambda: self.move(-1)),
+                         (tr("Move Down"), lambda: self.move(1)), (tr("Sort by Name"), self.sort)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            side.addWidget(b)
+        side.addStretch(1)
+        row.addLayout(side)
+        v.addLayout(row)
+        self.bb = _buttons(self, v)
+        self.bb.button(QDialogButtonBox.Ok).setText(tr("Combine"))
+        self.list.model().rowsInserted.connect(self._update)
+        self.list.model().rowsRemoved.connect(self._update)
+        self._add_paths(paths)
+        self._update()
+
+    def _add_paths(self, paths):
+        from PySide6.QtWidgets import QListWidgetItem
+        have = set(self.files())
+        for p in paths:
+            if p not in have:
+                it = QListWidgetItem(os.path.basename(p))
+                it.setToolTip(p)
+                it.setData(Qt.UserRole, p)
+                self.list.addItem(it)
+                have.add(p)
+
+    def files(self) -> list[str]:
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+
+    def add(self):
+        from ..commands.convert import SUPPORTED
+        pattern = " ".join("*" + e for e in sorted(SUPPORTED))
+        ps = QFileDialog.getOpenFileNames(self, tr("Add Files…"), "", f"{tr('All supported files')} ({pattern})")[0]
+        self._add_paths(ps)
+
+    def remove(self):
+        for it in self.list.selectedItems():
+            self.list.takeItem(self.list.row(it))
+
+    def move(self, step: int):
+        rows = sorted((self.list.row(it) for it in self.list.selectedItems()), reverse=step > 0)
+        for r in rows:
+            to = r + step
+            if 0 <= to < self.list.count():
+                self.list.insertItem(to, self.list.takeItem(r))
+                self.list.item(to).setSelected(True)
+
+    def sort(self):
+        paths = sorted(self.files(), key=lambda p: os.path.basename(p).lower())
+        self.list.clear()
+        self._add_paths(paths)
+
+    def _update(self, *_):
+        self.bb.button(QDialogButtonBox.Ok).setEnabled(self.list.count() >= 1)
+
+    @staticmethod
+    def ask(parent, paths: list[str]) -> list[str] | None:
+        d = CombineDialog(parent, paths)
+        if not paths:
+            d.add()
+        return d.files() if d.exec() == QDialog.Accepted and d.files() else None

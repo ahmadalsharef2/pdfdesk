@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=application/pdf;application/msword;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.oasis.opendocument.text;application/rtf;application/vnd.ms-excel;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.oasis.opendocument.spreadsheet;text/csv;application/vnd.ms-powerpoint;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.oasis.opendocument.presentation;image/png;image/jpeg;image/tiff;image/bmp;image/gif;image/webp;image/svg+xml;text/plain;text/html;application/epub+zip;application/oxps;application/vnd.ms-xpsdocument;
+Actions=combine;convert;
+X-KDE-Priority=TopLevel
+
+[Desktop Action combine]
+Name=Combine files in pdfdesk
+Name[de]=Dateien in pdfdesk zusammenführen
+Name[ar]=دمج الملفات في pdfdesk
+Icon=pdfdesk
+Exec=pdfdesk --combine %F
+
+[Desktop Action convert]
+Name=Convert to PDF in pdfdesk
+Name[de]=In pdfdesk in PDF konvertieren
+Name[ar]=تحويل إلى PDF في pdfdesk
+Icon=pdfdesk
+Exec=pdfdesk --convert %F
