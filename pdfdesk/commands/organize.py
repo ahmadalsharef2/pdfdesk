@@ -219,8 +219,6 @@ def _remove_layer_content(doc, name: str):
     if not xrefs:
         return
     for page in doc:
-        props = page.get_oc_items() if hasattr(page, "get_oc_items") else []
-        res = doc.xref_get_key(page.xref, "Resources")
         for cx in page.get_contents():
             data = doc.xref_stream(cx)
             for key, xr in _prop_names(doc, page):
@@ -228,9 +226,6 @@ def _remove_layer_content(doc, name: str):
                     pat = re.compile(rb"/OC\s*/" + key.encode() + rb"\s*BDC.*?EMC", re.S)
                     data = pat.sub(b"", data)
             doc.update_stream(cx, data)
-    # drop the OCG from the catalog
-    for x in xrefs:
-        pass
 
 
 def _prop_names(doc, page):

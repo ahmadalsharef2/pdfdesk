@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from xml.sax.saxutils import escape
 
@@ -231,7 +232,7 @@ def calculate(doc, target: str, sources: list[str], op: str = "sum"):
         except ValueError:
             nums.append(0.0)
     res = {"sum": sum(nums), "average": sum(nums) / len(nums) if nums else 0, "min": min(nums, default=0),
-           "max": max(nums, default=0), "product": __import__("math").prod(nums)}[op]
+           "max": max(nums, default=0), "product": math.prod(nums)}[op]
     fill(doc, {target: f"{res:g}"})
     return res
 

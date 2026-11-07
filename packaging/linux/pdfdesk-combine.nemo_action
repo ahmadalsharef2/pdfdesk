@@ -1,0 +1,9 @@
+[Nemo Action]
+Name=Combine files in pdfdesk
+Name[de]=Dateien in pdfdesk zusammenführen
+Name[ar]=دمج الملفات في pdfdesk
+Comment=Combine the selected files into one PDF
+Exec=pdfdesk --combine %F
+Icon-Name=pdfdesk
+Selection=m
+Extensions=bmp;cbz;csv;doc;docx;dps;epub;et;fb2;gif;htm;html;jp2;jpeg;jpg;jxr;key;numbers;odg;odp;ods;odt;pages;pdf;png;pnm;ppt;pptx;rtf;svg;tif;tiff;txt;vsd;vsdx;webp;wpd;wps;xhtml;xls;xlsx;xps;

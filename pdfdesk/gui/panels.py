@@ -4,8 +4,16 @@ from __future__ import annotations
 import pymupdf
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QListWidget, QListWidgetItem, QMenu, QTreeWidget,
-                               QTreeWidgetItem)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QTreeWidget,
+    QTreeWidgetItem,
+)
+
+from ..lang import tr
 
 ROLE = Qt.UserRole
 
@@ -98,9 +106,10 @@ class Thumbnails(QListWidget):
         if self.itemAt(pos) is None:
             return
         m = QMenu(self)
-        for label, name in (("Rotate right", "rotate-right"), ("Rotate left", "rotate-left"),
-                            ("Delete", "delete"), ("Extract…", "extract"), ("Duplicate", "duplicate"),
-                            ("Insert blank page after", "insert-blank"), ("Insert from file after…", "insert-file")):
+        for label, name in ((tr("Rotate right"), "rotate-right"), (tr("Rotate left"), "rotate-left"),
+                            (tr("Delete"), "delete"), (tr("Extract…"), "extract"), (tr("Duplicate"), "duplicate"),
+                            (tr("Insert blank page after"), "insert-blank"),
+                            (tr("Insert from file after…"), "insert-file")):
             m.addAction(label, lambda n=name: self.pageCommand.emit(n, self.selected_pages()))
         m.exec(self.mapToGlobal(pos))
 
@@ -135,16 +144,16 @@ class Bookmarks(QTreeWidget):
         it = self.itemAt(pos)
         k = it.data(0, ROLE + 1) if it is not None else -1
         m = QMenu(self)
-        m.addAction("Add bookmark here…", lambda: self.command.emit("add", k))
+        m.addAction(tr("Add bookmark here…"), lambda: self.command.emit("add", k))
         if it is not None:
-            m.addAction("Add child bookmark…", lambda: self.command.emit("add-child", k))
-            m.addAction("Rename…", lambda: self.command.emit("rename", k))
-            m.addAction("Set to current page", lambda: self.command.emit("set-page", k))
-            m.addAction("Promote", lambda: self.command.emit("promote", k))
-            m.addAction("Demote", lambda: self.command.emit("demote", k))
-            m.addAction("Delete", lambda: self.command.emit("delete", k))
+            m.addAction(tr("Add child bookmark…"), lambda: self.command.emit("add-child", k))
+            m.addAction(tr("Rename…"), lambda: self.command.emit("rename", k))
+            m.addAction(tr("Set to current page"), lambda: self.command.emit("set-page", k))
+            m.addAction(tr("Promote"), lambda: self.command.emit("promote", k))
+            m.addAction(tr("Demote"), lambda: self.command.emit("demote", k))
+            m.addAction(tr("Delete"), lambda: self.command.emit("delete", k))
         m.addSeparator()
-        m.addAction("Create from headings", lambda: self.command.emit("from-headings", k))
+        m.addAction(tr("Create from headings"), lambda: self.command.emit("from-headings", k))
         m.exec(self.viewport().mapToGlobal(pos))
 
 
@@ -165,14 +174,14 @@ class Comments(QListWidget):
         if it is None:
             return
         m = QMenu(self)
-        m.addAction("Go to", lambda: self.activated.emit(*it.data(ROLE)))
-        m.addAction("Properties…", lambda: self.command.emit("properties", *it.data(ROLE)))
-        m.addAction("Reply…", lambda: self.command.emit("reply", *it.data(ROLE)))
-        st = m.addMenu("Set Status")
+        m.addAction(tr("Go to"), lambda: self.activated.emit(*it.data(ROLE)))
+        m.addAction(tr("Properties…"), lambda: self.command.emit("properties", *it.data(ROLE)))
+        m.addAction(tr("Reply…"), lambda: self.command.emit("reply", *it.data(ROLE)))
+        st = m.addMenu(tr("Set Status"))
         for s in ("Accepted", "Rejected", "Cancelled", "Completed", "None"):
-            st.addAction(s, lambda s=s: self.command.emit("status:" + s, *it.data(ROLE)))
+            st.addAction(tr(s), lambda s=s: self.command.emit("status:" + s, *it.data(ROLE)))
         m.addSeparator()
-        m.addAction("Delete", lambda: self.command.emit("delete", *it.data(ROLE)))
+        m.addAction(tr("Delete"), lambda: self.command.emit("delete", *it.data(ROLE)))
         m.exec(self.viewport().mapToGlobal(pos))
 
     def set_document(self, doc):

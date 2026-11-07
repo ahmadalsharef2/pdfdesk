@@ -5,10 +5,21 @@ import hashlib
 import os
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QIconEngine, QPainter, QPainterPath, QPen, QPixmap,
-                           QPolygonF)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QIcon,
+    QIconEngine,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 
-ACCENT = "#6b2d7b"      # purple, like the File tab
+from .theme import ACCENT
+
 BLUE, RED, GREEN, ORANGE, GRAY, YELLOW = "#2b6cc4", "#d33a3a", "#2e9e5b", "#e8872a", "#6b6f76", "#f1c40f"
 
 # kind -> (glyph, colour) for glyph icons
@@ -38,6 +49,7 @@ GLYPHS = {
     "import": ("⇩", BLUE), "export": ("⇧", BLUE), "reset": ("↺", GRAY), "calc": ("Σ", BLUE), "link": ("🔗", BLUE),
     "layers": ("◫", GRAY), "optimize": ("⇲", GREEN), "audit": ("▥", GRAY), "search-folder": ("🔎", BLUE),
     "invoice": ("🧾", ACCENT), "invoice-view": ("🧾", BLUE), "xml": ("XML", GREEN), "embed-xml": ("📎", GREEN),
+    "language": ("🌐", BLUE), "auto-redact": ("▮▮", RED),
     "first": ("⏮", GRAY), "prev": ("◀", GRAY), "next": ("▶", GRAY), "last": ("⏭", GRAY),
 }
 
@@ -157,13 +169,13 @@ def icon(kind: str, size: int = 32) -> QIcon:
     return _cache[key]
 
 
-# App icon: a page resting on a desk. Teal and amber, kept clear of the red/orange of other PDF tools.
+# App icon: a page resting on a desk, in the accent red (a literal: packaging/build_deb.sh reads this with ast).
 APP_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<rect x="2" y="2" width="60" height="60" rx="14" fill="#0e5e6f"/>
+<rect x="2" y="2" width="60" height="60" rx="14" fill="#b3261e"/>
 <path d="M19 11h19l10 10v27a3 3 0 0 1-3 3H19a3 3 0 0 1-3-3V14a3 3 0 0 1 3-3z" fill="#fff"/>
-<path d="M38 11v8a2 2 0 0 0 2 2h8z" fill="#9fd3dc"/>
-<rect x="22" y="27" width="20" height="3" rx="1.5" fill="#0e5e6f"/>
-<rect x="22" y="34" width="14" height="3" rx="1.5" fill="#0e5e6f" opacity=".55"/>
+<path d="M38 11v8a2 2 0 0 0 2 2h8z" fill="#f3c2be"/>
+<rect x="22" y="27" width="20" height="3" rx="1.5" fill="#b3261e"/>
+<rect x="22" y="34" width="14" height="3" rx="1.5" fill="#b3261e" opacity=".55"/>
 <rect x="9" y="49" width="46" height="6" rx="3" fill="#f2a93b"/>
 </svg>
 """

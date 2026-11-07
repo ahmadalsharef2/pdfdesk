@@ -1,13 +1,24 @@
-"""Start page like Foxit's: purple sidebar (Home, Open File), Tool Wizard cards, Recent files list."""
+"""Start page: coloured sidebar (Home, Open File), Tool Wizard cards, Recent files list."""
 from __future__ import annotations
 
 import os
 from datetime import datetime
 
 from PySide6.QtCore import QSettings, QSize, Qt, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QTreeWidget,
-                               QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..lang import tr
+from . import theme
 from .icons import icon
 
 MAX_RECENT = 20
@@ -32,7 +43,7 @@ class Card(QFrame):
         super().__init__()
         self.setObjectName("card")
         self.setStyleSheet("#card{background:#fff;border:1px solid #e2e2e2;border-radius:4px}"
-                           "#card:hover{border-color:#6b2d7b} #card QLabel{background:transparent}")
+                           f"#card:hover{{border-color:{theme.ACCENT}}} #card QLabel{{background:transparent}}")
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(215, 150)
         v = QVBoxLayout(self)
@@ -46,9 +57,9 @@ class Card(QFrame):
         v.addLayout(top)
         d = QLabel(text)
         d.setWordWrap(True)
-        d.setStyleSheet("color:#777")
+        d.setStyleSheet(f"color:{theme.TEXT_MUTED}")
         v.addWidget(d, 1)
-        use = QLabel('<a href="#" style="color:#2b6cc4;text-decoration:none">Use Now</a>')
+        use = QLabel(f'<a href="#" style="color:{theme.ACCENT};text-decoration:none">{tr("Use Now")}</a>')
         use.linkActivated.connect(lambda _: self.clicked.emit())
         v.addWidget(use)
 
@@ -69,20 +80,20 @@ class StartPage(QWidget):
         side = QWidget()
         side.setObjectName("startSide")
         side.setFixedWidth(200)
-        side.setStyleSheet("#startSide{background:#6b2d7b} #startSide QLabel{color:#fff;background:transparent}")
+        side.setStyleSheet(f"#startSide{{background:{theme.ACCENT}}} #startSide QLabel{{color:#fff;background:transparent}}")
         sv = QVBoxLayout(side)
         sv.setContentsMargins(0, 18, 0, 14)
         logo = QLabel("<span style='font-size:22px;font-weight:bold'>pdf</span>"
                       "<span style='font-size:22px'>desk</span>")
         logo.setContentsMargins(16, 0, 0, 14)
         sv.addWidget(logo)
-        home = QLabel("  ⌂   Home")
-        home.setStyleSheet("background:#82419a;padding:10px;font-size:14px;color:#fff")
+        home = QLabel("  ⌂   " + tr("Home"))
+        home.setStyleSheet(f"background:{theme.ACCENT_HOVER};padding:10px;font-size:14px;color:#fff")
         sv.addWidget(home)
         sv.addStretch(1)
-        btn = QPushButton("Open File")
+        btn = QPushButton(tr("Open File"))
         btn.setStyleSheet("QPushButton{border:1px solid #fff;color:#fff;padding:8px;border-radius:3px;margin:0 12px}"
-                          "QPushButton:hover{background:#82419a}")
+                          f"QPushButton:hover{{background:{theme.ACCENT_HOVER}}}")
         btn.clicked.connect(self.openDialog)
         sv.addWidget(btn)
         h.addWidget(side)
@@ -95,23 +106,23 @@ class StartPage(QWidget):
         inner.setStyleSheet("#startInner{background:#f4f4f4}")
         iv = QVBoxLayout(inner)
         iv.setContentsMargins(18, 14, 18, 14)
-        iv.addWidget(self._heading("Tool Wizard", " (Frequently used tools)"))
+        iv.addWidget(self._heading(tr("Tool Wizard"), " (" + tr("Frequently used tools") + ")"))
         cards = QHBoxLayout()
         for ic, title, text, act in (
-                ("edit-text", "Edit PDF", "Edit document and text format", "edit"),
-                ("create", "From File", "Create a PDF from a Word, Excel, image or other file", "create"),
-                ("merge", "Merge PDF", "Combine several files into one PDF", "merge"),
-                ("move-pages", "Move PDF Pages", "Extract, delete, rotate and reorder pages", "pages")):
+                ("edit-text", tr("Edit PDF"), tr("Edit document and text format"), "edit"),
+                ("create", tr("From File"), tr("Create a PDF from a Word, Excel, image or other file"), "create"),
+                ("merge", tr("Merge PDF"), tr("Combine several files into one PDF"), "merge"),
+                ("move-pages", tr("Move PDF Pages"), tr("Extract, delete, rotate and reorder pages"), "pages")):
             c = Card(ic, title, text)
             c.clicked.connect(lambda a=act: self.action.emit(a))
             cards.addWidget(c)
         cards.addStretch(1)
         iv.addLayout(cards)
         iv.addSpacing(10)
-        iv.addWidget(self._heading("Recent", ""))
+        iv.addWidget(self._heading(tr("Recent"), ""))
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["Name", "Location", "Date Modified"])
+        self.tree.setHeaderLabels([tr("Name"), tr("Location"), tr("Date Modified")])
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setMinimumHeight(260)
@@ -126,9 +137,7 @@ class StartPage(QWidget):
 
     @staticmethod
     def _heading(a: str, b: str) -> QLabel:
-        l = QLabel(f"<span style='font-size:18px;color:#333'>{a}</span>"
-                   f"<span style='color:#888'>{b}</span>")
-        return l
+        return QLabel(f"<span style='font-size:18px;color:#333'>{a}</span><span style='color:#888'>{b}</span>")
 
     def refresh(self):
         self.tree.clear()

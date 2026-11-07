@@ -10,19 +10,20 @@ Required to start the window and use the main features:
 |---|---|
 | `libxcb-cursor0` | Qt's X11 plugin. Without it the window aborts at start |
 | `ghostscript` | PDF/A conversion (through OCRmyPDF) |
-| `tesseract-ocr`, `tesseract-ocr-eng`, `tesseract-ocr-osd` | OCR; `osd` lets it detect page rotation |
 | `libreoffice-writer`, `libreoffice-calc`, `libreoffice-impress`, `libreoffice-draw` | Create PDF from Word, Excel, PowerPoint, Visio/Draw files, and export to RTF |
 | `fontconfig` | Finding installed fonts (`fc-list`) |
 | `fonts-dejavu-core`, `fonts-liberation`, `fonts-noto-core` | Fonts for editing and adding text. Noto Sans Arabic is used for Arabic |
 | `python3-venv` | Making the virtual environment |
 
 ```
-sudo apt install libxcb-cursor0 ghostscript tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd \
+sudo apt install libxcb-cursor0 ghostscript \
   libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-draw \
   fontconfig fonts-dejavu-core fonts-liberation fonts-noto-core python3-venv
 ```
 
-More OCR languages: `sudo apt install tesseract-ocr-deu tesseract-ocr-ara` (replace with the language code).
+OCR uses PaddleOCR (a Python package, no system package). The first OCR run downloads its models (about 100 MB per
+language) to `~/.paddlex`; after that it works offline.
+The window language (English, Deutsch, العربية) is chosen under File > Language.
 
 Used when present (the app works without them):
 
@@ -60,3 +61,9 @@ Wayland you can also start it with `QT_QPA_PLATFORM=wayland`.
 
 PyMuPDF and Ghostscript are AGPL-3.0. That is fine for personal use. Distributing pdfdesk to others would
 require releasing it under the AGPL or buying Artifex's commercial licence.
+
+## Right-click menus
+
+The .deb adds "Combine files in pdfdesk" and "Convert to PDF in pdfdesk" to the file manager: Nautilus (GNOME,
+Zorin; needs `python3-nautilus`, then `nautilus -q` once to reload), Nemo (Mint) and Dolphin (KDE). The Windows
+installer adds the same two entries to Explorer (Windows 11: under "Show more options").

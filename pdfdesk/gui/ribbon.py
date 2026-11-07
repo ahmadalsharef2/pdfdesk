@@ -3,24 +3,26 @@ large buttons, stacked small buttons and icon grids, each group named underneath
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, QStringListModel, Qt, Signal
-from PySide6.QtWidgets import (QCompleter, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
-                               QSizePolicy, QStackedWidget, QTabBar, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCompleter,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
+    QTabBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..lang import tr
+from . import theme
 from .icons import icon
-
-STYLE = """
-QTabBar::tab { padding: 6px 12px; border: none; background: transparent; color: #333; }
-QTabBar::tab:selected { background: #fff; border-top: 2px solid #6b2d7b; color: #000; }
-QTabBar::tab:hover:!selected { background: #ece6ef; }
-QTabBar::tab:first { background: #6b2d7b; color: #fff; padding: 6px 20px; font-weight: bold; }
-QTabBar::tab:first:hover { background: #81419a; }
-#ribbonBody { background: #fff; border-top: 1px solid #d5d5d5; border-bottom: 1px solid #d5d5d5; }
-#ribbonRow { background: #f3f3f3; }
-QToolButton { border: 1px solid transparent; border-radius: 3px; padding: 2px; background: transparent; color: #222; }
-QToolButton:hover { background: #ece6ef; border-color: #cdb8d6; }
-QToolButton:checked { background: #dccbe3; border-color: #6b2d7b; }
-QToolButton::menu-indicator { image: none; }
-"""
 
 
 class Ribbon(QWidget):
@@ -28,7 +30,7 @@ class Ribbon(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(theme.RIBBON_STYLE)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -42,16 +44,16 @@ class Ribbon(QWidget):
         self.bar.setDrawBase(False)
         rl.addWidget(self.bar)
         rl.addStretch(1)
-        self.tellme = QLineEdit(placeholderText="💡 Tell me what you want to do…")
+        self.tellme = QLineEdit(placeholderText="💡 " + tr("Tell me what you want to do…"))
         self.tellme.setFixedWidth(240)
-        self.find = QLineEdit(placeholderText="Find")
+        self.find = QLineEdit(placeholderText=tr("Find"))
         self.find.setFixedWidth(190)
         rl.addWidget(self.tellme)
         rl.addWidget(self.find)
         v.addWidget(row)
         self.stack = QStackedWidget()
         self.stack.setObjectName("ribbonBody")
-        self.stack.setFixedHeight(98)
+        self.stack.setFixedHeight(104)
         v.addWidget(self.stack)
         self.bar.currentChanged.connect(self._changed)
         self.pages: dict[str, QHBoxLayout] = {}
@@ -67,14 +69,20 @@ class Ribbon(QWidget):
 
     # ---- tabs --------------------------------------------------------------------------------------
     def add_tab(self, name: str):
-        name = name.replace("&&", "&")
-        self.bar.addTab(name.replace("&", "&&"))      # QTabBar treats a single & as a shortcut marker
+        """`name` is the English key used by group(); the tab shows its translation."""
+        self.bar.addTab(tr(name).replace("&", "&&"))      # QTabBar treats a single & as a shortcut marker
         page = QWidget()
         lay = QHBoxLayout(page)
         lay.setContentsMargins(6, 4, 6, 2)
         lay.setSpacing(0)
         lay.setAlignment(Qt.AlignLeft)
-        self.stack.addWidget(page)
+        scroll = QScrollArea()                         # a long tab (German) scrolls instead of squeezing its buttons
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.stack.addWidget(scroll)
         self.pages[name] = lay
         self._names.append(name)
 
@@ -90,11 +98,17 @@ class Ribbon(QWidget):
     @staticmethod
     def large(text: str, ic: str, fn=None, checkable=False, tip: str | None = None, menu: list | None = None):
         b = QToolButton()
-        b.setText(text.replace("&", "&&"))
+        fm = b.fontMetrics()
+        lines = [text]
+        if fm.horizontalAdvance(text) > 100 and " " in text:     # long labels (German) go on two lines
+            cuts = [i for i, c in enumerate(text) if c == " "]
+            cut = min(cuts, key=lambda i: max(fm.horizontalAdvance(text[:i]), fm.horizontalAdvance(text[i + 1:])))
+            lines = [text[:cut], text[cut + 1:]]
+        b.setText("\n".join(lines).replace("&", "&&"))
         b.setIcon(icon(ic, 32))
-        b.setIconSize(QSize(30, 30))
+        b.setIconSize(QSize(26 if len(lines) > 1 else 30, 26 if len(lines) > 1 else 30))
         b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-        b.setFixedSize(max(54, min(120, 16 + b.fontMetrics().horizontalAdvance(text))), 66)
+        b.setFixedSize(max(54, min(130, 16 + max(fm.horizontalAdvance(t) for t in lines))), 66)
         b.setCheckable(checkable)
         if tip:
             b.setToolTip(tip)
@@ -109,7 +123,7 @@ class Ribbon(QWidget):
         b.setIconSize(QSize(16, 16))
         b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         b.setFixedHeight(22)
-        b.setMinimumWidth(84)
+        b.setMinimumWidth(max(84, b.fontMetrics().horizontalAdvance(text) + 30))
         b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         b.setCheckable(checkable)
         if tip:
@@ -174,15 +188,15 @@ class Ribbon(QWidget):
         for w in widgets:
             row.addWidget(w, 0, Qt.AlignTop)
         col.addLayout(row, 1)
-        lab = QLabel(title)
+        lab = QLabel(tr(title))
         lab.setAlignment(Qt.AlignCenter)
-        lab.setStyleSheet("color:#777;font-size:10px;padding-bottom:1px")
+        lab.setStyleSheet(f"color:{theme.TEXT_MUTED};font-size:10px;padding-bottom:1px")
         col.addWidget(lab)
         lay = self.pages[tab]
         lay.addWidget(box)
         sep = QFrame()
         sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet("color:#d9d9d9")
+        sep.setStyleSheet(f"color:{theme.LINE}")
         lay.addWidget(sep)
 
     def note(self, tab: str, text: str):

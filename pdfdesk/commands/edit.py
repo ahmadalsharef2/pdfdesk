@@ -178,7 +178,7 @@ def add_text(doc, page: int, point, text: str, fontsize: float = 12, color=(0, 0
     archive, face = None, "sans-serif"
     if ffile:
         archive = pymupdf.Archive(os.path.dirname(ffile))
-        face = f"pdfdeskface, sans-serif"
+        face = "pdfdeskface, sans-serif"
     css = (f"@font-face {{font-family: pdfdeskface; src: url({os.path.basename(ffile)});}} " if ffile else "") + \
           f"* {{font-family: {face}; font-size: {fontsize}px; color: rgb({r},{g},{b}); margin: 0;}}"
     html = "<br>".join(_esc(t) for t in rows)
@@ -339,8 +339,9 @@ def _reflow(doc, page, para: list[Line], new_text: str):
 @command("Text.Replace")
 def replace_text(doc, find: str, replace: str, pages: str | None = None, case_sensitive: bool = True) -> int:
     """Find and replace across the document, line by line. Returns the number of replacements."""
-    from .pages import parse_range
     import re
+
+    from .pages import parse_range
     n = 0
     rx = re.compile(re.escape(find), 0 if case_sensitive else re.I)
     for i in parse_range(pages, doc.page_count):

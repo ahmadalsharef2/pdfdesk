@@ -1,0 +1,9 @@
+[Nemo Action]
+Name=Convert to PDF in pdfdesk
+Name[de]=In pdfdesk in PDF konvertieren
+Name[ar]=تحويل إلى PDF في pdfdesk
+Comment=Open the selected files as PDFs
+Exec=pdfdesk --convert %F
+Icon-Name=pdfdesk
+Selection=notnone
+Extensions=bmp;cbz;csv;doc;docx;dps;epub;et;fb2;gif;htm;html;jp2;jpeg;jpg;jxr;key;numbers;odg;odp;ods;odt;pages;png;pnm;ppt;pptx;rtf;svg;tif;tiff;txt;vsd;vsdx;webp;wpd;wps;xhtml;xls;xlsx;xps;

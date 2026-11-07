@@ -3,7 +3,9 @@
 pymupdf==2.0              # render, text, annotations, redaction, forms, page ops (AGPL-3.0)
 pikepdf==10.17.0          # low-level PDF objects
 PySide6==6.12.0           # Qt 6 window
-ocrmypdf==17.13.0         # OCR, PDF/A (needs Tesseract and Ghostscript on the system)
+ocrmypdf==17.13.0         # PDF/A only, no OCR (needs Ghostscript on the system)
+paddleocr==3.7.0          # OCR: editable text, searchable text, Auto Redact on scans
+paddlepaddle==3.2.2       # 3.3 breaks the OCR models on CPU (oneDNN); keep 3.2
 pyHanko==0.38.0           # digital signatures, certify, validate
 pdf2docx==0.5.13          # PDF -> Word
 pdfplumber==0.11.10       # table fallback for export
@@ -12,7 +14,7 @@ python-docx==1.2.0        # Word files (export, tests)
 python-pptx==1.0.2        # export to PowerPoint
 img2pdf==0.6.3            # lossless image -> PDF (pulled in by OCRmyPDF)
 pillow==13.0.0            # image handling, TIFF export
-numpy==2.5.4              # pixel sampling for editable-text OCR
+numpy==2.3.5              # pixel sampling for editable-text OCR (paddleocr pins it)
 lxml==6.1.3               # e-invoice XML (ZUGFeRD / XRechnung)
 cryptography==50.0.2      # digital IDs (.pfx)
 pytest==9.1.1             # tests

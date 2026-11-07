@@ -649,7 +649,7 @@ def _addr(p: dict) -> str:
 
 
 @command("Invoice.ToHtml")
-def to_html(inv: dict, lang: str = "de", design: str = "classic", accent: str = "#6b2d7b",
+def to_html(inv: dict, lang: str = "de", design: str = "classic", accent: str = "#b3261e",
             logo: str | None = None) -> str:
     """HTML for the visual invoice (PyMuPDF Story CSS subset). Takes a computed or a parsed invoice."""
     L, e, cur = LABELS[lang], html.escape, inv["currency"]
@@ -739,7 +739,7 @@ def to_html(inv: dict, lang: str = "de", design: str = "classic", accent: str = 
 </body></html>"""
 
 
-def render(inv: dict, lang="de", design="classic", accent="#6b2d7b", logo=None) -> pymupdf.Document:
+def render(inv: dict, lang="de", design="classic", accent="#b3261e", logo=None) -> pymupdf.Document:
     html_text = to_html(inv, lang, design, accent, logo)
     story = pymupdf.Story(html=html_text, archive=pymupdf.Archive(os.path.dirname(logo)) if logo else None)
     buf = io.BytesIO()
@@ -853,7 +853,7 @@ def _xmp_with_fx(xmp: bytes, name: str, level: str) -> bytes:
 
 @command("Invoice.Create")
 def create(inv: dict, out_pdf: str | None = None, out_xml: str | None = None, lang: str = "de",
-           design: str = "classic", accent: str = "#6b2d7b", logo: str | None = None) -> dict:
+           design: str = "classic", accent: str = "#b3261e", logo: str | None = None) -> dict:
     """Write the invoice: a ZUGFeRD PDF/A-3 (out_pdf) and/or the XML alone (out_xml, e.g. for XRechnung)."""
     inv = compute(inv)
     xml = to_xml(inv)
