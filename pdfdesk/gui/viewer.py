@@ -6,12 +6,14 @@ Undo/redo keeps whole-document snapshots, which also covers changes made by pike
 """
 from __future__ import annotations
 
+import uuid
+
 import pymupdf
 from PySide6.QtCore import QPointF, QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QDesktopServices,
-    QFont,
     QGuiApplication,
     QImage,
     QKeySequence,
@@ -19,14 +21,16 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
 )
-from PySide6.QtWidgets import QAbstractScrollArea, QLineEdit, QMenu
+from PySide6.QtWidgets import QAbstractScrollArea, QMenu
 
 from ..commands import edit as edit_cmds
 from ..commands import objects, search
 from ..commands.comment import DEFAULT_COLORS, annot_at, text_between
 from ..commands.comment import style as comment_style
 from ..lang import tr
+from . import clipboard
 from .dialogs import fill_color_menu, qcolor, swatch
+from .text_editor import InlineTextEditor
 
 RECT_TOOLS = {"textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
               "digital-sign", "stamp", "image", "link", "field-text", "field-check", "field-radio", "field-combo",
@@ -68,6 +72,7 @@ class DocView(QAbstractScrollArea):
         self.modified = False
         self.tool = "hand"
         self.tool_colors: dict[str, tuple] = {}               # the window's color choices, shared by all views
+        self.token = uuid.uuid4().hex                          # names this document on the clipboard
         self.undo_stack: list[tuple[str, bytes]] = []
         self.redo_stack: list[tuple[str, bytes]] = []
         self.highlights: dict[int, list[pymupdf.Rect]] = {}
@@ -85,7 +90,7 @@ class DocView(QAbstractScrollArea):
         self._ink: tuple[int, list] | None = None
         self._hover_line = None
         self._announced = None
-        self._editor: QLineEdit | None = None
+        self._editor: InlineTextEditor | None = None
         self._edit_target = None
         self.viewport().setStyleSheet("background:#6b6b6b")
         self.viewport().setMouseTracking(True)
@@ -267,7 +272,7 @@ class DocView(QAbstractScrollArea):
         if sel:
             i, rect, resizable = sel
             if self._drag:
-                rect = self._drag["rect"]
+                i, rect = self._drag["page_to"], self._drag["rect"]
             r = self.page_rect_to_view(i, rect)
             p.setPen(QPen(QColor(30, 100, 255), 1.5, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
@@ -329,7 +334,7 @@ class DocView(QAbstractScrollArea):
     def set_tool(self, tool: str):
         self._commit_editor()
         self._press = self._poly = self._ink = self._drag = None
-        if tool != "edit-object":
+        if tool not in ("edit-object", "hand"):               # both tools work with a selected object
             self.obj_sel = None
         self.tool = tool
         self.viewport().setCursor(CURSORS.get(tool, Qt.CrossCursor))
@@ -367,17 +372,28 @@ class DocView(QAbstractScrollArea):
     def _start_drag(self, mode: str, pos, corner: str | None = None):
         i, rect, _ = self._selection()
         _j, pt = self.view_to_page(pos, clamp_page=i)
-        self._drag = {"mode": mode, "corner": corner, "page": i, "start": pt, "orig": pymupdf.Rect(rect),
-                      "rect": pymupdf.Rect(rect), "pos": pos, "keep_ratio": self.obj_sel is not None}
+        self._drag = {"mode": mode, "corner": corner, "page": i, "page_to": i, "start": pt,
+                      "orig": pymupdf.Rect(rect), "rect": pymupdf.Rect(rect), "pos": pos,
+                      "keep_ratio": self.obj_sel is not None}
 
     def _update_drag(self, pos):
         d = self._drag
-        _j, pt = self.view_to_page(pos, clamp_page=d["page"])
         o = d["orig"]
         if d["mode"] == "move":
-            dx, dy = pt.x - d["start"].x, pt.y - d["start"].y
-            d["rect"] = o + (dx, dy, dx, dy)
+            j, pt = self.view_to_page(pos)                      # a move may end on another page
+            if j is None:
+                pass                                            # between pages: keep the last position
+            elif j != d["page"]:
+                d["page_to"] = j
+                tl = pt - (d["start"] - o.tl)                   # the grabbed point keeps its place in the box
+                d["rect"] = pymupdf.Rect(tl, tl + (o.width, o.height))
+            else:
+                d["page_to"] = j
+                _j, pt = self.view_to_page(pos, clamp_page=j)
+                dx, dy = pt.x - d["start"].x, pt.y - d["start"].y
+                d["rect"] = o + (dx, dy, dx, dy)
         else:
+            _j, pt = self.view_to_page(pos, clamp_page=d["page"])
             # the opposite corner stays put
             fx, fy = (o.x1 if "l" in d["corner"] else o.x0), (o.y1 if "t" in d["corner"] else o.y0)
             w, h = max(abs(pt.x - fx), 4), max(abs(pt.y - fy), 4)
@@ -396,7 +412,13 @@ class DocView(QAbstractScrollArea):
             self.viewport().update()
             return
         page = d["page"] + 1
-        if self.obj_sel:
+        if d["mode"] == "move" and d["page_to"] != d["page"]:
+            to = d["page_to"] + 1
+            if self.obj_sel:
+                self._emit(tool="object-to-page", page=page, index=self.obj_sel[1], to_page=to, rect=d["rect"])
+            else:
+                self._emit(tool="annot-to-page", page=page, xref=self.selected[1], to_page=to, rect=d["rect"])
+        elif self.obj_sel:
             self._emit(tool="object-rect", page=page, index=self.obj_sel[1], rect=d["rect"])
         elif d["mode"] == "move":
             o, r = d["orig"], d["rect"]
@@ -409,16 +431,26 @@ class DocView(QAbstractScrollArea):
             self._objs[i] = objects.list_objects(self.doc, i + 1)
         return self._objs[i]
 
-    def _object_at(self, i: int, point):
+    def _object_at(self, i: int, point, added_only: bool = False):
+        """The smallest object under point; added_only: only what pdfdesk placed (text, images, signatures)."""
         pt = pymupdf.Point(point)
-        hits = [o for o in self.page_objects(i) if (o.rect + (-2, -2, 2, 2)).contains(pt)]
+        hits = [o for o in self.page_objects(i) if (o.added or not added_only) and (o.rect + (-2, -2, 2, 2)).contains(pt)]
         return min(hits, key=lambda o: o.rect.get_area()) if hits else None
 
-    def select_object_at(self, i: int, point) -> bool:
-        o = self._object_at(i, point)
+    def select_object_at(self, i: int, point, added_only: bool = False) -> bool:
+        o = self._object_at(i, point, added_only)
         self.obj_sel = (i, o.index) if o else None
+        if o:
+            self.selected = None
         self.viewport().update()
         return o is not None
+
+    def select_last_object(self, i: int):
+        """Select the object drawn last on a page: what was just pasted or placed."""
+        objs = self.page_objects(i)
+        self.obj_sel = (i, objs[-1].index) if objs else None
+        self.selected = None
+        self.viewport().update()
 
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
@@ -444,9 +476,14 @@ class DocView(QAbstractScrollArea):
                 xref = annot_at(self.doc, i + 1, pt)
                 self.selected = (i, xref) if xref else None
                 if xref:
+                    self.obj_sel = None
                     self._start_drag("move", pos)
                     self.viewport().update()
                     return
+                if self.select_object_at(i, pt, added_only=True):      # something pdfdesk added: pick it up
+                    self._start_drag("move", pos)
+                    return
+            self.obj_sel = None
             self._pan = (pos, self.horizontalScrollBar().value(), self.verticalScrollBar().value())
             self.viewport().setCursor(Qt.ClosedHandCursor)
             self.viewport().update()
@@ -489,8 +526,8 @@ class DocView(QAbstractScrollArea):
             if corner:
                 self.viewport().setCursor(Qt.SizeFDiagCursor if corner in ("tl", "br") else Qt.SizeBDiagCursor)
             else:
-                self.viewport().setCursor(Qt.SizeAllCursor if self.tool == "edit-object" and self._over_object(pos)
-                                          else CURSORS.get(self.tool, Qt.CrossCursor))
+                over = self._over_object(pos, added_only=self.tool == "hand")
+                self.viewport().setCursor(Qt.SizeAllCursor if over else CURSORS.get(self.tool, Qt.CrossCursor))
         if self._pan:
             start, hx, vy = self._pan
             self.horizontalScrollBar().setValue(int(hx - (pos.x() - start.x())))
@@ -514,9 +551,9 @@ class DocView(QAbstractScrollArea):
         if self._press or self._poly:
             self.viewport().update()
 
-    def _over_object(self, pos) -> bool:
+    def _over_object(self, pos, added_only: bool = False) -> bool:
         i, pt = self.view_to_page(pos)
-        return i is not None and self._object_at(i, pt) is not None
+        return i is not None and self._object_at(i, pt, added_only) is not None
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.LeftButton:
@@ -577,7 +614,19 @@ class DocView(QAbstractScrollArea):
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and (self.obj_sel or self.selected):
-            self._delete_selected()
+            self.delete_selected()
+            return
+        if e.matches(QKeySequence.StandardKey.Copy):
+            if self.text_sel:
+                QGuiApplication.clipboard().setText(self.selected_text())
+            elif self.obj_sel or self.selected:
+                self._emit(tool="copy")
+            return
+        if e.matches(QKeySequence.StandardKey.Cut) and (self.obj_sel or self.selected):
+            self._emit(tool="cut")
+            return
+        if e.matches(QKeySequence.StandardKey.Paste):
+            self.paste_here()
             return
         if e.key() in (Qt.Key_Return, Qt.Key_Enter) and (self._poly or self._ink):
             self.finish_shape()
@@ -587,10 +636,15 @@ class DocView(QAbstractScrollArea):
             self.selected = self.text_sel = self.obj_sel = None
             self.viewport().update()
             return
-        if e.matches(QKeySequence.StandardKey.Copy) and self.text_sel:
-            QGuiApplication.clipboard().setText(self.selected_text())
-            return
         super().keyPressEvent(e)
+
+    def paste_here(self):
+        """Paste at the mouse position when it is over a page, else onto the current page."""
+        pos = QPointF(self.viewport().mapFromGlobal(QCursor.pos()))
+        i, pt = self.view_to_page(pos)
+        if i is None:
+            i, pt = self.current_page(), None
+        self._emit(tool="paste", page=i + 1, point=pt)
 
     def selected_text(self) -> str:
         if not self.text_sel:
@@ -618,7 +672,7 @@ class DocView(QAbstractScrollArea):
         elif xref := annot_at(self.doc, i + 1, pt):
             self.obj_sel, self.selected = None, (i, xref)
             self._annot_menu(m, i, xref)
-        elif self.tool == "edit-object" and self.select_object_at(i, pt):
+        elif self.tool in ("hand", "edit-object") and self.select_object_at(i, pt, added_only=self.tool == "hand"):
             self._object_menu(m, i)
         elif w := next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None):
             self._field_menu(m, i, w)
@@ -707,16 +761,27 @@ class DocView(QAbstractScrollArea):
         if st["content"]:
             m.addAction(tr("Copy text"), lambda: QGuiApplication.clipboard().setText(st["content"]))
         m.addSeparator()
-        m.addAction(tr("Delete"), lambda: self._delete_selected())
+        m.addAction(tr("Copy"), lambda: self._emit(tool="copy"))
+        m.addAction(tr("Cut"), lambda: self._emit(tool="cut"))
+        m.addAction(tr("Delete"), lambda: self.delete_selected())
 
     def _object_menu(self, m: QMenu, i: int):
         n = self.obj_sel[1]
         o = next(o for o in self.page_objects(i) if o.index == n)
         page = i + 1
+        m.addAction(tr("Copy"), lambda: self._emit(tool="copy"))
+        m.addAction(tr("Cut"), lambda: self._emit(tool="cut"))
+        m.addSeparator()
         if o.kind == "text":
             text = self.doc[i].get_text(clip=o.rect + (-1, -1, 1, 1)).strip()
             m.addAction(tr("Copy text"), lambda: QGuiApplication.clipboard().setText(text))
             m.addAction(tr("Edit text"), lambda: self._emit(tool="set-tool", name="edit-text"))
+        if o.size:
+            sz = m.addMenu(tr("Font size ({size} pt)", size=f"{o.size:.3g}"))
+            for pt in (6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48):
+                a = sz.addAction(str(pt), lambda pt=pt: self._emit(tool="object-fontsize", page=page, index=n, size=pt))
+                a.setCheckable(True)
+                a.setChecked(abs(o.size - pt) < 0.05)
         m.addAction(tr("Copy as Image"), lambda: self._copy_object_image(page, n))
         m.addAction(tr("Export as Image…"), lambda: self._emit(tool="object-export", page=page, index=n))
         m.addSeparator()
@@ -729,7 +794,7 @@ class DocView(QAbstractScrollArea):
         m.addAction(tr("Add Link…"), lambda: self._emit(tool="link", page=page, rect=pymupdf.Rect(o.rect)))
         m.addAction(tr("Mark for Redaction"), lambda: self._emit(tool="redact-rects", page=page, rects=[pymupdf.Rect(o.rect)]))
         m.addSeparator()
-        m.addAction(tr("Delete"), lambda: self._delete_selected())
+        m.addAction(tr("Delete"), lambda: self.delete_selected())
 
     def _copy_object_image(self, page: int, index: int):
         data, _ext = objects.export_image(self.doc, page, index, dpi=200)
@@ -750,10 +815,9 @@ class DocView(QAbstractScrollArea):
         page = i + 1
         if self.text_sel:
             m.addAction(tr("Copy"), lambda: QGuiApplication.clipboard().setText(self.selected_text()))
-        cb = QGuiApplication.clipboard().mimeData()
-        if cb is not None and (cb.hasImage() or cb.hasText()):
-            m.addAction(tr("Paste Image Here") if cb.hasImage() else tr("Paste Text Here"),
-                        lambda: self._emit(tool="paste", page=page, point=pt))
+        what = clipboard.describe()
+        if what:
+            m.addAction(tr(f"Paste {what} Here"), lambda: self._emit(tool="paste", page=page, point=pt))
         m.addAction(tr("Select all text on this page"), lambda: self.select_page_text(i))
         m.addAction(tr("Copy Page as Image"), lambda: QGuiApplication.clipboard().setImage(
             QImage.fromData(self.doc[i].get_pixmap(dpi=150, alpha=False).tobytes("png"))))
@@ -790,7 +854,7 @@ class DocView(QAbstractScrollArea):
         m.addAction(tr("Print…"), lambda: self._emit(tool="app", name="print"))
         m.addAction(tr("Document Properties…"), lambda: self._emit(tool="app", name="properties"))
 
-    def _delete_selected(self):
+    def delete_selected(self):
         if self.obj_sel:
             (i, n), self.obj_sel = self.obj_sel, None
             self._emit(tool="delete-object", page=i + 1, index=n)
@@ -825,36 +889,29 @@ class DocView(QAbstractScrollArea):
     # ---- inline text editor (Edit Text tool) -------------------------------------------------------------
     def _open_editor(self, i: int, ln):
         self._commit_editor()
-        ed = QLineEdit(self.viewport())
-        ed.setText(ln.text)
-        f = QFont()
-        f.setPixelSize(max(8, int(ln.size * self.zoom * 0.95)))
-        ed.setFont(f)
-        r = self.page_rect_to_view(i, ln.rect)
-        ed.setGeometry(int(r.x()) - 2, int(r.y()) - 2, max(int(r.width()) + 60, 120), int(r.height()) + 6)
-        ed.setStyleSheet("background:#fffbe6;border:1px solid #1e64ff;")
-        ed.editingFinished.connect(self._commit_editor)     # Enter or focus moving away; Esc cancels
+        ed = InlineTextEditor(self.viewport(), ln.text, ln.size, ln.color, self.zoom)
+        ed.place(self.page_rect_to_view(i, ln.rect))
+        ed.committed.connect(self._commit_editor)
+        ed.cancelled.connect(self._close_editor)
         ed.show()
-        ed.setFocus()
-        ed.selectAll()
+        ed.focus()
         self._editor, self._edit_target = ed, (i, ln)
-        ed.installEventFilter(self)
-
-    def eventFilter(self, obj, ev):
-        if obj is self._editor and ev.type() == ev.Type.KeyPress and ev.key() == Qt.Key_Escape:
-            self._close_editor()
-            return True
-        return super().eventFilter(obj, ev)
 
     def _commit_editor(self):
+        """Keep the edit: the text, and the size or color when they were changed."""
         if self._editor is None:
             return
-        text = self._editor.text()
-        i, ln = self._edit_target
+        ed, (i, ln) = self._editor, self._edit_target
+        text, size, color = ed.text(), ed.size(), ed.color()
         self._close_editor()
-        if text != ln.text:
+        changed = {}
+        if abs(size - ln.size) > 0.05:
+            changed["size"] = size
+        if color and any(abs(a - b) > 1 / 255 for a, b in zip(color, ln.color)):
+            changed["color"] = color
+        if text != ln.text or changed:
             center = ln.rect.tl + (ln.rect.br - ln.rect.tl) / 2
-            self._emit(tool="edit-text-commit", page=i + 1, point=center, text=text)
+            self._emit(tool="edit-text-commit", page=i + 1, point=center, text=text, **changed)
 
     def _close_editor(self):
         if self._editor is not None:

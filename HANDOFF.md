@@ -41,6 +41,19 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q            # tests
 - OCRmyPDF is used only for PDF/A; `convert._ocrmypdf_without_tesseract` skips its check for the tesseract program.
 - PyMuPDF and Ghostscript are AGPL-3.0: fine for personal use, distribution needs the AGPL.
 
+- Selection is one model in `gui/viewer.py`: a comment (`selected`) or a page object (`obj_sel`). The Hand tool
+  also picks up what pdfdesk added (text, images, signatures, pastes), never the page's own art: add commands
+  run inside `objects.adding()`, which wraps new content in `/PdfDesk BMC … EMC`; `Object.List` reports it as
+  `added`. Dragging a selection onto another page moves it (`Comment.Transfer`, `Object.Transfer`).
+- Copy / cut / paste (`gui/clipboard.py`): a JSON item under `application/x-pdfdesk-item`, plus text or an image
+  for other programs. In its own document an object is duplicated instruction by instruction with its resources
+  (`Object.Copy` / `Object.Paste`); into another document it goes as a one-page snapshot clipped to its box
+  (`Object.PasteFrom`). Comments copy by object source (`Comment.Copy` / `Comment.Paste`). `Comment.Move`
+  shifts /L, /Vertices, /InkList, /QuadPoints and /CL as well, because MuPDF refuses `set_rect` on lines.
+- Typewriter and Add Text ask for size (default 10 pt, remembered per tool) and color; the Edit Text editor
+  (`gui/text_editor.py`) has both; text objects have a Font size submenu (`Object.FontSize`). Settings go
+  through `gui/prefs.py`. `Main.on_tool` is a table of handlers grouped by feature (`_build_handlers`).
+
 ## Not built yet
 
 XFA and form JavaScript, Action Wizard (`.sequ`), veraPDF validation, accessibility, read aloud, portfolios,

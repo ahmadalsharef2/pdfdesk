@@ -61,7 +61,9 @@ def _buttons(dlg: QDialog, layout):
 
 # ---- text entry --------------------------------------------------------------------------------------
 class TextDialog(QDialog):
-    def __init__(self, parent, title: str, label: str, text: str = "", size: float | None = None):
+    """Multi-line text entry; with a font size and a text color when the caller asks for them."""
+
+    def __init__(self, parent, title: str, label: str, text: str = "", size: float | None = None, color=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         v = QVBoxLayout(self)
@@ -69,24 +71,32 @@ class TextDialog(QDialog):
         self.edit = QPlainTextEdit(text)
         self.edit.setMinimumSize(380, 110)
         v.addWidget(self.edit)
-        self.size = None
-        if size is not None:
+        self.size = self.color = None
+        if size is not None or color is not None:
             row = QHBoxLayout()
-            row.addWidget(QLabel(tr("Font size:")))
-            self.size = QDoubleSpinBox(minimum=4, maximum=144, value=size)
-            row.addWidget(self.size)
+            if size is not None:
+                row.addWidget(QLabel(tr("Font size:")))
+                self.size = QDoubleSpinBox(minimum=4, maximum=144, value=size, decimals=1)
+                row.addWidget(self.size)
+            if color is not None:
+                row.addWidget(QLabel(tr("Color:")))
+                self.color = ColorButton(tuple(color))
+                row.addWidget(self.color)
             row.addStretch()
             v.addLayout(row)
         _buttons(self, v)
 
     @staticmethod
-    def ask(parent, title, label, text="", size=None):
-        d = TextDialog(parent, title, label, text, size)
+    def ask(parent, title, label, text="", size=None, color=None):
+        """The text; or, when a size or color is asked for, {"text", "size", "color"}. None when cancelled."""
+        d = TextDialog(parent, title, label, text, size, color)
         d.edit.setFocus()
         if d.exec() != QDialog.Accepted or not d.edit.toPlainText().strip():
             return None
         t = d.edit.toPlainText().rstrip("\n")
-        return (t, d.size.value()) if size is not None else t
+        if size is None and color is None:
+            return t
+        return {"text": t, "size": d.size.value() if d.size else None, "color": d.color.rgb if d.color else None}
 
 
 # ---- colors and comment properties --------------------------------------------------------------------

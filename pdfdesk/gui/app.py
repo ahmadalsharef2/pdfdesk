@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import getpass
 import glob
-import json
 import os
 import subprocess
 import sys
 import tempfile
 
 import pymupdf
-from PySide6.QtCore import QLocale, QSettings, QSize, Qt, QTimer
+from PySide6.QtCore import QLocale, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,12 +43,12 @@ from ..commands import run
 from ..commands.protect import PATTERNS
 from ..core import security as sec
 from ..lang import tr
-from . import dialogs, theme
+from . import clipboard, dialogs, prefs, theme
 from .icons import app_icon, icon
 from .panels import Bookmarks, Comments, Thumbnails
 from .ribbon import Ribbon
 from .start import StartPage, add_recent
-from .viewer import RECT_TOOLS, DocView
+from .viewer import DocView
 
 RIBBON = ["File", "Home", "Convert", "Edit", "Fill & Sign", "Organize", "Comment", "View", "Form",
           "Protect", "Invoice", "Share", "Connect", "Accessibility", "Help"]
@@ -58,8 +57,9 @@ NOT_YET = {"Share": "Email, shared review and cloud drives are planned for a lat
            "Accessibility": "Accessibility check and tagging are planned for a later phase."}
 
 TOOL_HINTS = {
-    "hand": "Hand: drag to scroll; click a comment to select it, drag to move, drag a corner to resize "
-            "(Delete removes it, double-click or right-click to change its color, size and text)",
+    "hand": "Hand: drag to scroll; click a comment or something you added (text, image, signature) to select it, "
+            "drag to move (also onto another page), drag a corner to resize; Ctrl+C / Ctrl+V copy and paste, "
+            "Delete removes it, double-click or right-click for its properties",
     "select": "Select: drag over text; right-click to highlight, Ctrl+C copies", "zoom": "Zoom: click to zoom in, Shift+click out",
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
@@ -72,8 +72,9 @@ TOOL_HINTS = {
     "cloud": "Cloud: click points, double-click or Enter to finish",
     "polyline": "Polyline: click points, double-click or Enter to finish",
     "pencil": "Pencil: draw, press Enter to finish", "stamp": "Stamp: drag a box",
-    "edit-text": "Edit text: click a line of text and change it; click elsewhere or press Enter to keep it",
-    "edit-object": "Edit object: click text, a shape, an image or a signature; drag to move, drag a corner to resize, Delete removes it",
+    "edit-text": "Edit text: click a line of text and change it, its size or its color; click elsewhere or press Enter to keep it",
+    "edit-object": "Edit object: click text, a shape, an image or a signature; drag to move (also onto another page), "
+                   "drag a corner to resize, Ctrl+C / Ctrl+V copy and paste, Delete removes it",
     "add-text": "Add text: click where the text goes", "image": "Add image: drag a box",
     "redact": "Mark for redaction: drag over text or images", "whiteout": "Whiteout: drag over what to erase",
     "sign-place": "Place signature: click or drag a box", "digital-sign": "Digital signature: drag a box",
@@ -85,31 +86,6 @@ QUALITIES = [("High quality", "high"), ("Medium quality", "medium"), ("Low quali
 
 # Tool actions that run one command with values from the action: tool -> (undo label, command, action keys).
 # Comment tools also get the author and the tool's colour.
-PLAIN_ACTIONS = {
-    "delete-annot": ("Delete comment", "Comment.Delete", ("xref",)),
-    "annot-rect": ("Resize comment", "Comment.SetRect", ("xref", "rect")),
-    "move-annot": ("Move comment", "Comment.Move", ("xref", "dx", "dy")),
-    "object-rect": ("Move object", "Object.Transform", ("index", "rect")),
-    "delete-object": ("Delete object", "Object.Delete", ("index",)),
-    "edit-text-commit": ("Edit text", "Text.EditLine", ("point", "text")),
-}
-COMMENT_ACTIONS = {
-    "highlight": ("Highlight", "Comment.Highlight", ("start", "stop")),
-    "underline": ("Underline", "Comment.Underline", ("start", "stop")),
-    "strikeout": ("Strikeout", "Comment.Strikeout", ("start", "stop")),
-    "squiggly": ("Squiggly", "Comment.Squiggly", ("start", "stop")),
-    "area-highlight": ("Area highlight", "Comment.AreaHighlight", ("rect",)),
-    "rectangle": ("Rectangle", "Comment.Rectangle", ("rect",)),
-    "oval": ("Oval", "Comment.Oval", ("rect",)),
-    "line": ("Line", "Comment.Line", ("start", "stop")),
-    "arrow": ("Arrow", "Comment.Arrow", ("start", "stop")),
-    "polygon": ("Polygon", "Comment.Polygon", ("points",)),
-    "cloud": ("Cloud", "Comment.Cloud", ("points",)),
-    "polyline": ("Polyline", "Comment.Polyline", ("points",)),
-    "pencil": ("Pencil", "Comment.Pencil", ("strokes",)),
-}
-
-
 def _ranges(pages0: list[int]) -> str:
     """0-based page list -> '1-3,7' spec."""
     out, i = [], 0
@@ -123,8 +99,7 @@ def _ranges(pages0: list[int]) -> str:
     return ",".join(out)
 
 
-def settings() -> QSettings:
-    return QSettings("pdfdesk", "pdfdesk")
+settings = prefs.store
 
 
 class Main(QMainWindow):
@@ -142,9 +117,9 @@ class Main(QMainWindow):
         self._batch_timer = QTimer(self, singleShot=True)
         self._batch_timer.timeout.connect(self._run_batch)
         self.tool_buttons: dict[str, list[QToolButton]] = {}
-        self.tool_colors: dict[str, tuple] = {k: tuple(c) for k, c in
-                                              json.loads(settings().value("tool_colors", "{}")).items()}
+        self.tool_colors: dict[str, tuple] = {k: tuple(c) for k, c in prefs.get_json("tool_colors", {}).items()}
         self.color_buttons: list[dialogs.ColorButton] = []
+        self._handlers = self._build_handlers()
 
         self.ribbon = Ribbon()
         self.find_box = self.ribbon.find
@@ -649,14 +624,17 @@ class Main(QMainWindow):
         return self.tool if self.tool in comment_cmds.DEFAULT_COLORS else "highlight"
 
     def set_tool_color(self, rgb, tool: str | None = None):
+        """New comments (or text) made with this tool get this color, now and in later sessions."""
         t = tool or self._color_tool()
-        if rgb:
-            self.tool_colors[t] = tuple(rgb)
-        settings().setValue("tool_colors", json.dumps(self.tool_colors))
+        if not rgb:
+            return
+        self.tool_colors[t] = tuple(rgb)
+        prefs.put_json("tool_colors", self.tool_colors)
         self._show_tool_color()
         if self.cur():
             self.cur().viewport().update()
-        self.msg(tr("New {tool} comments use this color", tool=tr(t.replace("-", " "))))
+        what = "New {tool} text uses this color" if t == "add-text" else "New {tool} comments use this color"
+        self.msg(tr(what, tool=tr(t.replace("-", " "))))
 
     def _show_tool_color(self):
         t = self._color_tool()
@@ -717,128 +695,205 @@ class Main(QMainWindow):
             w.set_tool(tool)
         self.msg(tr(TOOL_HINTS.get(tool, "")))
 
+    # ---- tool actions: one handler per feature -------------------------------------------------------------
+    # actions that change nothing in the document, so a read-only document allows them
+    VIEW_ACTIONS = {"set-tool", "page-command", "find", "app", "tool-color", "object-export", "copy"}
+    IMAGES = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"
+
     def on_tool(self, a: dict):
-        """A gesture from the view: {"tool": name, "page": 1-based page, ...}. The simple ones are tables above;
-        the rest need a dialog or a decision."""
+        """A gesture from the view: a dict with "tool" (the action's name) and its arguments."""
         v = self.cur()
         if not v:
             return
-        t, page = a["tool"], a.get("page")
-        if t == "set-tool":
-            return self.set_tool(a["name"])
-        if t == "page-command":
-            return self._page_command(a["name"], a["pages"])
-        if t == "find":
-            self.find_box.setText(a["text"])
-            return self.do_find()
-        if t == "app":
-            return {"find": lambda: (self.find_box.setFocus(), self.find_box.selectAll()), "print": self.print_doc,
-                    "properties": self.properties}[a["name"]]()
-        if t == "tool-color":
-            return self.set_tool_color(a["color"], a["name"])
-        if t == "object-export":
-            return self._export_object(page, a["index"])
-        if t not in ("select", "hand", "zoom") and v.readonly:
+        t = a["tool"]
+        if t not in self.VIEW_ACTIONS and getattr(v, "readonly", False):
             return self.error(tr("Read only"), tr("This document was opened with its user password and does not "
                                                  "allow changes. Open it with the permissions password to edit."))
-        if t in RECT_TOOLS and t != "sign-place" and not a.get("rect"):
-            return                                   # a click, not a drag
+        fn = self._handlers.get(t)
+        if fn is None:
+            return
         try:
-            if t in PLAIN_ACTIONS:
-                label, cmd, keys = PLAIN_ACTIONS[t]
-                return self.apply(tr(label), lambda d: run(cmd, d, page, *[a[k] for k in keys]))
-            if t in ("redact", "whiteout"):
-                cmd, label = ("Redact.MarkRects", "Mark for redaction") if t == "redact" else ("Redact.Whiteout", "Whiteout")
-                return self.apply(tr(label), lambda d: run(cmd, d, page, [a["rect"]]))
-            if t in COMMENT_ACTIONS:
-                label, cmd, keys = COMMENT_ACTIONS[t]
-                col = a.get("color") or self.tool_colors.get(t)
-                kw = {"author": self.author, **({"color": col} if col else {})}
-                return self.apply(tr(label), lambda d: run(cmd, d, page, *[a[k] for k in keys], **kw))
-            return self._other_tool(t, a)
+            return fn(a, a.get("page"))
         except Exception as e:  # noqa: BLE001
             self.error(tr("Error"), e)
 
-    def _other_tool(self, t: str, a: dict):
-        page, au = a.get("page"), self.author
-        col = a.get("color") or self.tool_colors.get(t)
-        cw = {"color": col} if col else {}
-        ask = dialogs.TextDialog.ask
-        if t == "edit-annot":
-            return self.comment_properties(page, a["xref"])
-        if t == "annot-style":
-            return self.apply(tr("Comment properties"), lambda d: run("Comment.SetStyle", d, page, a["xref"], **a["style"]))
-        if t == "annot-reply":
-            r = ask(self, tr("Reply"), tr("Reply:"))
-            return r and self.apply(tr("Reply"), lambda d: run("Comment.Reply", d, page, a["xref"], r, author=au))
-        if t == "annot-status":
-            return self.apply(tr("Status {state}", state=tr(a["state"])),
-                              lambda d: run("Comment.SetStatus", d, page, a["xref"], a["state"], author=au))
-        if t == "highlight-note":
-            r = ask(self, tr("Note on text"), tr("Note:"))
-            return r and self.apply(tr("Highlight with note"), lambda d: run("Comment.Highlight", d, page, a["start"], a["stop"],
-                                                                             author=au, note=r, **cw))
-        if t == "bookmark-here":
-            title, ok = QInputDialog.getText(self, tr("Add bookmark"), tr("Title:"), text=a["title"] or tr("Page {n}", n=page))
-            return ok and title and self.apply(tr("Add bookmark"), lambda d: run("Bookmarks.Add", d, title, page))
-        if t == "redact-rects":
-            self.apply(tr("Mark for redaction"), lambda d: run("Redact.MarkRects", d, page, a["rects"]))
-            return self.msg(tr("Marked for redaction — use Protect > Apply Redactions to remove it permanently"))
-        if t == "object-turn":
-            if "flip" in a:
-                return self.apply(tr("Flip object"), lambda d: run("Object.Flip", d, page, a["index"], a["flip"] == "h"))
-            return self.apply(tr("Rotate object"), lambda d: run("Object.Rotate", d, page, a["index"], a["angle"]))
-        if t == "object-geometry":
-            r = dialogs.GeometryDialog.ask(self, a["rect"])
-            return r and self.apply(tr("Position and size"), lambda d: run("Object.Transform", d, page, a["index"], r))
-        if t == "field-reset":
-            return self.apply(tr("Clear field") if a["names"] else tr("Reset form"), lambda d: run("Form.Reset", d, a["names"]))
-        if t == "field-delete":
-            if QMessageBox.question(self, tr("Delete field"), tr("Delete the field “{name}”?", name=a["name"])) == QMessageBox.Yes:
-                self.apply(tr("Delete field"), lambda d: run("Form.DeleteField", d, a["name"]))
-            return
-        if t == "paste":
-            return self._paste(page, a["point"])
-        if t == "image-here":
-            p = QFileDialog.getOpenFileName(self, tr("Image"), "", tr("Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"))[0]
-            return p and self._place_image(page, a["point"], open(p, "rb").read())
-        if t == "replace-text":
-            r = ask(self, tr("Replace text"), tr("Replacement text:"))
-            return r and self.apply(tr("Replace text"), lambda d: run("Comment.ReplaceText", d, page, a["start"], a["stop"], r, author=au))
-        if t == "note":
-            r = ask(self, tr("Note"), tr("Note text:"))
-            return r and self.apply(tr("Note"), lambda d: run("Comment.Note", d, page, a["point"], r, author=au, **cw))
-        if t == "file":
-            p = QFileDialog.getOpenFileName(self, tr("Attach file"))[0]
-            return p and self.apply(tr("Attach file"), lambda d: run("Comment.File", d, page, a["point"], p, author=au))
-        if t == "typewriter":
-            r = ask(self, tr("Typewriter"), tr("Text:"), size=12)
-            return r and self.apply(tr("Typewriter"), lambda d: run("Comment.Typewriter", d, page, a["point"], r[0], fontsize=r[1], author=au, **cw))
-        if t == "add-text":
-            r = ask(self, tr("Add text"), tr("Text:"), size=12)
-            return r and self.apply(tr("Add text"), lambda d: run("Text.Add", d, page, a["point"], r[0], fontsize=r[1]))
-        if t == "textbox":
-            r = ask(self, tr("Text box"), tr("Text:"))
-            return r and self.apply(tr("Text box"), lambda d: run("Comment.Textbox", d, page, a["rect"], r, author=au))
-        if t == "callout":
-            r = ask(self, tr("Callout"), tr("Text:"))
-            box = pymupdf.Rect(a["stop"].x, a["stop"].y, a["stop"].x + 140, a["stop"].y + 50)
-            return r and self.apply(tr("Callout"), lambda d: run("Comment.Callout", d, page, a["start"], box, r, author=au))
-        if t == "stamp":
-            return self.apply(tr("Stamp"), lambda d: run("Comment.Stamp", d, page, a["rect"], self.stamp_name, author=au))
-        if t == "image":
-            p = QFileDialog.getOpenFileName(self, tr("Image"), "", tr("Images (*.png *.jpg *.jpeg *.bmp *.gif)"))[0]
-            return p and self.apply(tr("Add image"), lambda d: run("Sign.Image", d, page, a["rect"], path=p))
-        if t == "sign-place":
-            return self._place_signature(a)
-        if t == "fill-field":
-            return self.fill_field(page, a["xref"])
-        if t.startswith("field-"):
-            return self.add_field(t[6:], page, a["rect"])
-        if t == "link":
-            return self.add_link(page, a["rect"])
-        if t == "digital-sign":
-            return self.digital_sign(a)
+    def _build_handlers(self) -> dict:
+        """Action name -> handler(a, page). Grouped by feature; each runs one command as one undoable step."""
+        def cmd(label, name, *args, **kw):
+            return self.apply(tr(label), lambda d: run(name, d, *args, **kw))
+
+        def cw(a):                              # the color of a new comment: the gesture's, else the tool's
+            col = a.get("color") or self.tool_colors.get(a["tool"])
+            return {"color": col} if col else {}
+
+        def asked(title, label, then):          # a text dialog, then the command with its text
+            r = dialogs.TextDialog.ask(self, tr(title), tr(label))
+            return then(r) if r else None
+
+        def pick_file(title, filt=""):
+            return QFileDialog.getOpenFileName(self, tr(title), "", tr(filt) if filt else "")[0]
+
+        app = {
+            "set-tool": lambda a, p: self.set_tool(a["name"]),
+            "page-command": lambda a, p: self._page_command(a["name"], a["pages"]),
+            "find": lambda a, p: (self.find_box.setText(a["text"]), self.do_find()),
+            "app": lambda a, p: {"find": lambda: (self.find_box.setFocus(), self.find_box.selectAll()),
+                                 "print": self.print_doc, "properties": self.properties}[a["name"]](),
+            "tool-color": lambda a, p: self._remember_tool_color(a["name"], a["color"]),
+        }
+        comments = {
+            "delete-annot": lambda a, p: cmd("Delete comment", "Comment.Delete", p, a["xref"]),
+            "annot-rect": lambda a, p: cmd("Resize comment", "Comment.SetRect", p, a["xref"], a["rect"]),
+            "move-annot": lambda a, p: cmd("Move comment", "Comment.Move", p, a["xref"], a["dx"], a["dy"]),
+            "annot-to-page": lambda a, p: self._select_comment(a["to_page"], cmd(
+                tr("Move comment to page {n}", n=a["to_page"]), "Comment.Transfer", p, a["xref"], a["to_page"], a["rect"])),
+            "edit-annot": lambda a, p: self.comment_properties(p, a["xref"]),
+            "annot-style": lambda a, p: cmd("Comment properties", "Comment.SetStyle", p, a["xref"], **a["style"]),
+            "annot-reply": lambda a, p: asked("Reply", "Reply:", lambda r: cmd(
+                "Reply", "Comment.Reply", p, a["xref"], r, author=self.author)),
+            "annot-status": lambda a, p: cmd(tr("Status {state}", state=tr(a["state"])), "Comment.SetStatus", p, a["xref"], a["state"],
+                                             author=self.author),
+        }
+        objects_ = {
+            "object-rect": lambda a, p: cmd("Move object", "Object.Transform", p, a["index"], a["rect"]),
+            "delete-object": lambda a, p: cmd("Delete object", "Object.Delete", p, a["index"]),
+            "object-turn": lambda a, p: (cmd("Flip object", "Object.Flip", p, a["index"], a["flip"] == "h") if "flip" in a
+                                         else cmd("Rotate object", "Object.Rotate", p, a["index"], a["angle"])),
+            "object-geometry": lambda a, p: (r := dialogs.GeometryDialog.ask(self, a["rect"])) and cmd(
+                "Position and size", "Object.Transform", p, a["index"], r),
+            "object-fontsize": lambda a, p: self._reselect_object(p, cmd("Font size", "Object.FontSize", p, a["index"], a["size"])),
+            "object-to-page": lambda a, p: self._select_last_object(a["to_page"], cmd(
+                tr("Move object to page {n}", n=a["to_page"]), "Object.Transfer", p, a["index"], a["to_page"], a["rect"])),
+            "object-export": lambda a, p: self._export_object(p, a["index"]),
+        }
+        clip = {
+            "copy": lambda a, p: self._copy(),
+            "cut": lambda a, p: self._cut(),
+            "paste": lambda a, p: self._paste(p, a.get("point")),
+        }
+        markup = {
+            **{t: (lambda a, p, n=n: cmd(n, f"Comment.{n}", p, a["start"], a["stop"], author=self.author, **cw(a)))
+               for t, n in (("highlight", "Highlight"), ("underline", "Underline"), ("strikeout", "Strikeout"),
+                            ("squiggly", "Squiggly"))},
+            "highlight-note": lambda a, p: asked("Note on text", "Note:", lambda r: cmd(
+                "Highlight with note", "Comment.Highlight", p, a["start"], a["stop"], author=self.author, note=r, **cw(a))),
+            "replace-text": lambda a, p: asked("Replace text", "Replacement text:", lambda r: cmd(
+                "Replace text", "Comment.ReplaceText", p, a["start"], a["stop"], r, author=self.author)),
+            "area-highlight": lambda a, p: a["rect"] and cmd("Area highlight", "Comment.AreaHighlight", p, a["rect"],
+                                                             author=self.author, **cw(a)),
+        }
+        shapes = {
+            **{t: (lambda a, p, n=n: a["rect"] and cmd(n, f"Comment.{n}", p, a["rect"], author=self.author, **cw(a)))
+               for t, n in (("rectangle", "Rectangle"), ("oval", "Oval"))},
+            **{t: (lambda a, p, n=n: cmd(n, f"Comment.{n}", p, a["start"], a["stop"], author=self.author, **cw(a)))
+               for t, n in (("line", "Line"), ("arrow", "Arrow"))},
+            **{t: (lambda a, p, n=n: cmd(n, f"Comment.{n}", p, a["points"], author=self.author, **cw(a)))
+               for t, n in (("polygon", "Polygon"), ("cloud", "Cloud"), ("polyline", "Polyline"))},
+            "pencil": lambda a, p: cmd("Pencil", "Comment.Pencil", p, a["strokes"], author=self.author, **cw(a)),
+            "stamp": lambda a, p: a["rect"] and cmd("Stamp", "Comment.Stamp", p, a["rect"], self.stamp_name, author=self.author),
+        }
+        text = {
+            "note": lambda a, p: asked("Note", "Note text:", lambda r: cmd(
+                "Note", "Comment.Note", p, a["point"], r, author=self.author, **cw(a))),
+            "file": lambda a, p: (f := pick_file("Attach file")) and cmd(
+                "Attach file", "Comment.File", p, a["point"], f, author=self.author),
+            "typewriter": lambda a, p: self._typed_text("typewriter", "Typewriter", lambda r: cmd(
+                "Typewriter", "Comment.Typewriter", p, a["point"], r["text"], fontsize=r["size"], color=r["color"],
+                author=self.author)),
+            "add-text": lambda a, p: self._typed_text("add-text", "Add text", lambda r: cmd(
+                "Add text", "Text.Add", p, a["point"], r["text"], fontsize=r["size"], color=r["color"])),
+            "insert-text": lambda a, p: asked("Insert text", "Text to insert:", lambda r: cmd(
+                "Insert text", "Comment.InsertText", p, a["point"], r, author=self.author)),
+            "textbox": lambda a, p: a["rect"] and asked("Text box", "Text:", lambda r: cmd(
+                "Text box", "Comment.Textbox", p, a["rect"], r, author=self.author)),
+            "callout": lambda a, p: asked("Callout", "Text:", lambda r: cmd(
+                "Callout", "Comment.Callout", p, a["start"],
+                pymupdf.Rect(a["stop"].x, a["stop"].y, a["stop"].x + 140, a["stop"].y + 50), r, author=self.author)),
+            "edit-text-commit": lambda a, p: cmd("Edit text", "Text.EditLine", p, a["point"], a["text"],
+                                                 size=a.get("size"), color=a.get("color")),
+        }
+        page = {
+            "bookmark-here": self._bookmark_here,
+            "redact-rects": lambda a, p: (cmd("Mark for redaction", "Redact.MarkRects", p, a["rects"]), self.msg(
+                tr("Marked for redaction — use Protect > Apply Redactions to remove it permanently"))),
+            "redact": lambda a, p: a["rect"] and cmd("Mark for redaction", "Redact.MarkRects", p, [a["rect"]]),
+            "whiteout": lambda a, p: a["rect"] and cmd("Whiteout", "Redact.Whiteout", p, [a["rect"]]),
+            "image": lambda a, p: a["rect"] and (f := pick_file("Image", self.IMAGES)) and cmd(
+                "Add image", "Sign.Image", p, a["rect"], path=f),
+            "image-here": lambda a, p: (f := pick_file("Image", self.IMAGES)) and self._place_image(
+                p, a["point"], open(f, "rb").read()),
+            "sign-place": lambda a, p: self._place_signature(a),
+            "digital-sign": lambda a, p: a["rect"] and self.digital_sign(a),
+            "link": lambda a, p: a["rect"] and self.add_link(p, a["rect"]),
+            "fill-field": lambda a, p: self.fill_field(p, a["xref"]),
+            "field-reset": lambda a, p: cmd("Clear field" if a["names"] else "Reset form", "Form.Reset", a["names"]),
+            "field-delete": self._field_delete,
+            **{f"field-{k}": (lambda a, p, k=k: a["rect"] and self.add_field(k, p, a["rect"]))
+               for k in ("text", "check", "radio", "combo", "list", "button", "sign")},
+        }
+        return {**app, **comments, **objects_, **clip, **markup, **shapes, **text, **page}
+
+    # ---- helpers of the handlers -------------------------------------------------------------------------------
+    def _typed_text(self, tool: str, title: str, then):
+        """Ask for text with the size and color last used by this tool, remember them, then run then(r)."""
+        size = prefs.get_float(f"text_size/{tool}", 10.0)
+        color = self.tool_colors.get(tool) or comment_cmds.DEFAULT_COLORS.get(tool, (0, 0, 0))
+        r = dialogs.TextDialog.ask(self, tr(title), tr("Text:"), size=size, color=color)
+        if not r:
+            return None
+        prefs.put(f"text_size/{tool}", r["size"])
+        if r["color"] and tuple(r["color"]) != tuple(color):
+            self._remember_tool_color(tool, r["color"])
+        return then(r)
+
+    def _bookmark_here(self, a, page):
+        title, ok = QInputDialog.getText(self, tr("Add bookmark"), tr("Title:"), text=a["title"] or tr("Page {n}", n=page))
+        return ok and title and self.apply(tr("Add bookmark"), lambda d: run("Bookmarks.Add", d, title, page))
+
+    def _field_delete(self, a, _page):
+        if QMessageBox.question(self, tr("Delete field"), tr("Delete the field “{name}”?", name=a["name"])) == QMessageBox.Yes:
+            self.apply(tr("Delete field"), lambda d: run("Form.DeleteField", d, a["name"]))
+
+    def _select_comment(self, page: int, xref):
+        if xref and self.cur():
+            v = self.cur()
+            v.selected, v.obj_sel = (page - 1, xref), None
+            v.viewport().update()
+
+    def _select_last_object(self, page: int, result):
+        if result is not None and self.cur():
+            self.cur().select_last_object(page - 1)
+
+    def _reselect_object(self, page: int, result):
+        """After an object changed shape, select it again where it is now (its number is unchanged)."""
+        v = self.cur()
+        if result is not None and v and v.obj_sel:
+            v.obj_sel = (page - 1, v.obj_sel[1])
+            v.viewport().update()
+
+    # ---- clipboard ------------------------------------------------------------------------------------------
+    def _copy(self):
+        label = clipboard.copy_selection(self.cur())
+        self.msg(tr(label) if label else tr("Nothing selected to copy"))
+
+    def _cut(self):
+        v = self.cur()
+        if clipboard.copy_selection(v):
+            v.delete_selected()
+
+    def _paste(self, page: int, point=None):
+        v = self.cur()
+        act = clipboard.paste_action(v, page, point)
+        if act is None:
+            return self.msg(tr("Nothing to paste"))
+        label, fn, select = act
+        res = self.apply(tr(label), fn)
+        if res is not None:
+            select(v, res)
+
+    def _place_image(self, page: int, point, data: bytes):
+        label, fn = clipboard.image_action(self.cur(), page, point, data)
+        return self._select_last_object(page, self.apply(tr(label), fn))
 
     def _place_signature(self, a):
         if self.sig_spec is None:
@@ -856,29 +911,6 @@ class Main(QMainWindow):
             self.set_tool("edit-object")
             self.cur().select_object_at(page - 1, placed.tl + (placed.br - placed.tl) / 2)
             self.msg(tr("Signature placed. Drag to move it, drag a corner to resize, Delete removes it."))
-
-    def _place_image(self, page: int, point, data: bytes):
-        from PySide6.QtGui import QImage
-        img = QImage.fromData(data)
-        if img.isNull():
-            return self.error(tr("Image"), tr("This is not an image Qt can read."))
-        w, h = img.width() * 0.75, img.height() * 0.75          # pixels at 96 dpi -> points
-        pr = self.cur().doc[page - 1].rect
-        k = max(0.05, min(1.0, (pr.width - point.x - 10) / w if w else 1, 300 / max(w, h, 1)))
-        rect = pymupdf.Rect(point.x, point.y, point.x + w * k, point.y + h * k)
-        return self.apply(tr("Add image"), lambda d: run("Sign.Image", d, page, rect, data=data))
-
-    def _paste(self, page: int, point):
-        from PySide6.QtCore import QBuffer, QIODevice
-        md = QApplication.clipboard().mimeData()
-        if md.hasImage():
-            buf = QBuffer()
-            buf.open(QIODevice.WriteOnly)
-            QApplication.clipboard().image().save(buf, "PNG")
-            return self._place_image(page, point, bytes(buf.data()))
-        text = md.text().strip()
-        if text:
-            return self.apply(tr("Paste text"), lambda d: run("Text.Add", d, page, point, text, fontsize=11))
 
     def _export_object(self, page: int, index: int):
         v = self.cur()
@@ -1726,7 +1758,7 @@ class Main(QMainWindow):
             return
         inv, out = r["invoice"], r["output"]
         base = "".join(c if c.isalnum() or c in "-_" else "_" for c in inv["number"]) or "invoice"
-        folder = settings().value("invoice/folder", os.path.expanduser("~"))
+        folder = prefs.get("invoice/folder", os.path.expanduser("~"))
         pdf = xml = None
         if out in ("pdf", "both"):
             pdf = QFileDialog.getSaveFileName(self, tr("Save e-invoice"), os.path.join(folder, base + ".pdf"), tr("PDF (*.pdf)"))[0]
@@ -1738,7 +1770,7 @@ class Main(QMainWindow):
             xml = QFileDialog.getSaveFileName(self, tr("Save XRechnung XML"), os.path.join(folder, base + ".xml"), "XML (*.xml)")[0]
             if not xml:
                 return
-        settings().setValue("invoice/folder", os.path.dirname(pdf or xml))
+        prefs.put("invoice/folder", os.path.dirname(pdf or xml))
         self._busy(tr("Creating e-invoice (PDF/A-3)…"))
         try:
             res = run("Invoice.Create", inv, out_pdf=pdf, out_xml=xml, lang=r["lang"], design=r["design"],

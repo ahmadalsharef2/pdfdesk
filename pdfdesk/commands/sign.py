@@ -12,6 +12,7 @@ import os
 import pymupdf
 
 from ..core import fonts
+from .objects import adding
 from .registry import command
 
 # ---- visual signatures ---------------------------------------------------------------------------------
@@ -38,8 +39,8 @@ def typed(doc, page: int, rect, name: str, color=(0, 0, 0.55)):
 
 @command("Sign.Image")
 def image(doc, page: int, rect, path: str | None = None, data: bytes | None = None):
-    p = doc[page - 1]
-    p.insert_image(pymupdf.Rect(rect), filename=path, stream=data, keep_proportion=True)
+    with adding(doc, page):                        # the Hand tool can pick the image up afterwards
+        doc[page - 1].insert_image(pymupdf.Rect(rect), filename=path, stream=data, keep_proportion=True)
     return pymupdf.Rect(rect)
 
 
@@ -114,7 +115,8 @@ def place(doc, page: int, rect, spec: dict, lines: list[str] | None = None):
         ink(tmp, 1, fit_strokes(spec["strokes"], spec["size"], box))
     clip = box | caption(tmp, 1, box, lines) if lines else box
     target = pymupdf.Rect(clip.x0 - pad + r.x0, r.y0, clip.x1 - pad + r.x0, r.y0 + clip.height)
-    doc[page - 1].show_pdf_page(target, tmp, 0, clip=clip)
+    with adding(doc, page):
+        doc[page - 1].show_pdf_page(target, tmp, 0, clip=clip)
     return target
 
 

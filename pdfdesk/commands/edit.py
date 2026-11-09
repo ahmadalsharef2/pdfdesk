@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 
 import pymupdf
 
 from ..core import fonts
+from .objects import adding
 from .registry import command
 
 
@@ -184,11 +185,12 @@ def add_text(doc, page: int, point, text: str, fontsize: float = 12, color=(0, 0
     html = "<br>".join(_esc(t) for t in rows)
     if rtl:
         html = f'<div dir="rtl">{html}</div>'
-    for _ in range(4):
-        spare, _scale = p.insert_htmlbox(rect, html, css=css, archive=archive, scale_low=1)
-        if spare >= 0:
-            break
-        rect.y1 += fontsize * 2
+    with adding(doc, page):                        # the Hand tool can pick the new text up afterwards
+        for _ in range(4):
+            spare, _scale = p.insert_htmlbox(rect, html, css=css, archive=archive, scale_low=1)
+            if spare >= 0:
+                break
+            rect.y1 += fontsize * 2
     return rect
 
 
@@ -197,12 +199,16 @@ def _esc(t: str) -> str:
 
 
 @command("Text.EditLine")
-def edit_line(doc, page: int, point, new_text: str, reflow: bool = True) -> Line | None:
-    """Replace the text of the line under point with new_text, keeping font, size, colour and baseline;
-    with reflow, the rest of the paragraph wraps again to fill or make room."""
+def edit_line(doc, page: int, point, new_text: str, reflow: bool = True, size: float | None = None,
+              color=None) -> Line | None:
+    """Replace the text of the line under point with new_text, keeping font, baseline, and size and colour
+    unless new ones are given; with reflow, the rest of the paragraph wraps again to fill or make room."""
     ln = line_at(doc, page, point)
     if ln is None:
         raise ValueError("no text line at that position")
+    if size or color:
+        ln = replace(ln, size=size or ln.size, color=tuple(color) if color else ln.color,
+                     words=[(w, (f, size or s, tuple(color) if color else c)) for w, (f, s, c) in ln.words])
     p = doc[page - 1]
     if reflow and ln.dir == (1.0, 0.0):
         para = _paragraph(lines(doc, page), ln)

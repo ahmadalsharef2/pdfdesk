@@ -13,7 +13,7 @@ YELLOW, RED, BLUE = (1, 0.85, 0), (0.9, 0.1, 0.1), (0.1, 0.3, 0.9)
 # Each command holds its page in `p` while it works: PyMuPDF unbinds an annotation once its page is collected.
 # the color each GUI tool gives a new comment unless the user picks another (typewriter: its text color)
 DEFAULT_COLORS = {"highlight": YELLOW, "area-highlight": YELLOW, "underline": (0, 0.6, 0), "strikeout": RED,
-                  "squiggly": BLUE, "note": YELLOW, "typewriter": (0, 0, 0),
+                  "squiggly": BLUE, "note": YELLOW, "typewriter": (0, 0, 0), "add-text": (0, 0, 0),
                   **{t: RED for t in ("rectangle", "oval", "line", "arrow", "polygon", "cloud", "polyline", "pencil")}}
 
 
@@ -469,12 +469,88 @@ def set_rect(doc, page, xref: int, rect):
     return False
 
 
+# ---- moving and copying -------------------------------------------------------------------------------
+# keys that hold page coordinates besides /Rect, so a comment moves as a whole (set_rect alone leaves a
+# line's end points or an ink's strokes behind, and MuPDF refuses it for lines)
+_POINT_KEYS = ("Rect", "QuadPoints", "L", "Vertices", "CL", "InkList")
+
+
+def _shift(nums: str, dx: float, dy: float) -> str:
+    vals = [float(v) for v in nums.split()]
+    return "[" + " ".join(f"{v + (dx if k % 2 == 0 else dy):g}" for k, v in enumerate(vals)) + "]"
+
+
+def _translate(doc, page: pymupdf.Page, xref: int, dx: float, dy: float):
+    """Move every coordinate of a comment by (dx, dy), given in unrotated page space (y down)."""
+    m = ~page.transformation_matrix                       # page space -> PDF user space
+    v = pymupdf.Point(dx, dy) * m - pymupdf.Point(0, 0) * m
+    for key in _POINT_KEYS:
+        kind, val = doc.xref_get_key(xref, key)
+        if kind == "array":
+            doc.xref_set_key(xref, key, re.sub(r"\[([^\[\]]*)\]", lambda mm: _shift(mm.group(1), v.x, v.y), val))
+
+
 @command("Comment.Move")
 def move(doc, page, xref: int, dx: float, dy: float):
+    p, _a = _annot(doc, page, xref)
+    _translate(doc, p, xref, dx, dy)
+    return True
+
+
+# keys a copy must not share with its original: appearance, popup, page, reply links, optional content
+_UNSHARED = ("AP", "Popup", "P", "IRT", "RT", "OC", "Parent", "StructParent")
+
+
+def _own_appearance(doc, xref: int) -> int | None:
+    """The xref of a comment's single normal appearance stream, when it has one."""
+    kind, val = doc.xref_get_key(xref, "AP/N")
+    return int(val.split()[0]) if kind == "xref" else None
+
+
+@command("Comment.Copy")
+def copy(doc, page, xref: int) -> dict:
+    """A comment as Comment.Paste takes it: its object source and box. "ap" is its appearance stream, usable
+    only when pasting into the same document; "portable" says whether it can go to another document."""
+    _p, a = _annot(doc, page, xref)
+    if a.type[0] in (pymupdf.PDF_ANNOT_WIDGET, pymupdf.PDF_ANNOT_POPUP, pymupdf.PDF_ANNOT_LINK):
+        raise ValueError("form fields and links are not copied as comments")
+    return {"source": doc.xref_object(xref, compressed=True), "rect": tuple(a.rect), "type": a.type[1],
+            "content": a.info.get("content", ""), "ap": _own_appearance(doc, xref),
+            "portable": a.type[0] != pymupdf.PDF_ANNOT_FILE_ATTACHMENT}
+
+
+@command("Comment.Paste")
+def paste(doc, page, source: str, rect=None, ap: int | None = None) -> int:
+    """A new comment from Comment.Copy's source, placed with its top-left at rect's (a box or a point);
+    ap (same document only) copies the original's appearance, otherwise the appearance is drawn afresh.
+    Returns the new xref."""
     p = doc[page - 1]
-    for a in p.annots() or []:
-        if a.xref == xref:
-            a.set_rect(a.rect + (dx, dy, dx, dy))
-            a.update()
-            return True
-    return False
+    # a placeholder MuPDF registers on the page, whose object then becomes the copied comment
+    new = p.add_rect_annot(pymupdf.Rect(0, 0, 10, 10)).xref
+    doc.update_object(new, source)
+    for key in _UNSHARED:
+        doc.xref_set_key(new, key, "null")
+    doc.xref_set_key(new, "P", f"{p.xref} 0 R")
+    doc.xref_set_key(new, "NM", pymupdf.get_pdf_str(f"pdfdesk-{new}"))
+    if ap:
+        apn = doc.get_new_xref()
+        doc.update_object(apn, doc.xref_object(ap, compressed=True))
+        doc.update_stream(apn, doc.xref_stream(ap), new=True)
+        doc.xref_set_key(new, "AP", f"<</N {apn} 0 R>>")
+    a = p.load_annot(new)
+    if rect is not None:
+        tl = pymupdf.Point(rect) if len(rect) == 2 else pymupdf.Rect(rect).tl
+        cur = a.rect
+        _translate(doc, p, new, tl.x - cur.x0, tl.y - cur.y0)
+    if not ap:
+        p.load_annot(new).update()
+    return new
+
+
+@command("Comment.Transfer")
+def transfer(doc, page, xref: int, to_page: int, rect) -> int:
+    """Move a comment to another page, its top-left at rect's. Returns its new xref."""
+    item = copy(doc, page, xref)
+    new = paste(doc, to_page, item["source"], rect, ap=item["ap"])
+    delete(doc, page, xref)
+    return new
