@@ -890,4 +890,8 @@ STRINGS = {
     'Page {n} — Alt+Left goes back': 'Seite {n} — Alt+Links springt zurück',
     'Open link': 'Link öffnen',
     'Open this address in the browser?\n\n{url}': 'Diese Adresse im Browser öffnen?\n\n{url}',
+    'File attachment': 'Dateianhang',
+    'Redaction mark': 'Schwärzungsmarkierung',
+    'Page {n} ({count})': 'Seite {n} ({count})',
+    'No comments yet. Use the Comment tab, or select text and right-click.': 'Noch keine Kommentare. Die Registerkarte Kommentar verwenden oder Text auswählen und rechtsklicken.',
 }

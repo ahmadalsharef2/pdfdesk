@@ -70,6 +70,7 @@ class DocView(QAbstractScrollArea):
 
     GAP = 12
     UNDO_LIMIT = 30
+    UNDO_BYTES = 768 * 2**20            # a big scan would otherwise keep 30 whole copies in memory
     CACHE_BYTES = 256 * 2**20
 
     def __init__(self, doc: pymupdf.Document, path: str | None = None, password: str | None = None):
@@ -129,7 +130,8 @@ class DocView(QAbstractScrollArea):
             self.redo_stack.clear()
             return
         self.undo_stack.append((label, self.doc.tobytes()))
-        if len(self.undo_stack) > self.UNDO_LIMIT:
+        while len(self.undo_stack) > self.UNDO_LIMIT or (
+                len(self.undo_stack) > 2 and sum(len(d) for _l, d in self.undo_stack) > self.UNDO_BYTES):
             self.undo_stack.pop(0)
         self.redo_stack.clear()
 

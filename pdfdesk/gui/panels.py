@@ -168,53 +168,96 @@ class Bookmarks(QTreeWidget):
         m.exec(self.viewport().mapToGlobal(pos))
 
 
-class Comments(QListWidget):
-    """Comments of the document; click to show one, double-click or right-click to change or delete it."""
+class Comments(QTreeWidget):
+    """Comments of the document grouped by page, each with its color, kind, author and text (or the text it
+    marks); replies under their comment. Click shows and selects one; double-click or right-click changes it."""
     activated = Signal(int, int)  # page index, xref
     command = Signal(str, int, int)  # "properties" or "delete", page index, xref
 
     def __init__(self):
         super().__init__()
-        self.itemClicked.connect(lambda it: self.activated.emit(*it.data(ROLE)))
-        self.itemDoubleClicked.connect(lambda it: self.command.emit("properties", *it.data(ROLE)))
+        self.setHeaderHidden(True)
+        self.setIndentation(12)
+        self.setUniformRowHeights(False)
+        self.setWordWrap(True)
+        self.setTextElideMode(Qt.ElideRight)
+        self.itemClicked.connect(self._clicked)
+        self.itemDoubleClicked.connect(lambda it, _c: it.data(0, ROLE) and self.command.emit("properties", *it.data(0, ROLE)))
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
 
+    def _clicked(self, it, _col=0):
+        if it.data(0, ROLE):
+            self.activated.emit(*it.data(0, ROLE))
+
     def _menu(self, pos):
         it = self.itemAt(pos)
-        if it is None:
+        if it is None or not it.data(0, ROLE):
             return
+        ref = it.data(0, ROLE)
         m = QMenu(self)
-        m.addAction(tr("Go to"), lambda: self.activated.emit(*it.data(ROLE)))
-        m.addAction(tr("Properties…"), lambda: self.command.emit("properties", *it.data(ROLE)))
-        m.addAction(tr("Reply…"), lambda: self.command.emit("reply", *it.data(ROLE)))
+        m.addAction(tr("Go to"), lambda: self.activated.emit(*ref))
+        m.addAction(tr("Properties…"), lambda: self.command.emit("properties", *ref))
+        m.addAction(tr("Reply…"), lambda: self.command.emit("reply", *ref))
         st = m.addMenu(tr("Set Status"))
         for s in ("Accepted", "Rejected", "Cancelled", "Completed", "None"):
-            st.addAction(tr(s), lambda s=s: self.command.emit("status:" + s, *it.data(ROLE)))
+            st.addAction(tr(s), lambda s=s: self.command.emit("status:" + s, *ref))
         m.addSeparator()
-        m.addAction(tr("Delete"), lambda: self.command.emit("delete", *it.data(ROLE)))
+        m.addAction(tr("Delete"), lambda: self.command.emit("delete", *ref))
         m.exec(self.viewport().mapToGlobal(pos))
 
     def set_document(self, doc):
+        collapsed = {self.topLevelItem(k).data(0, ROLE + 1) for k in range(self.topLevelItemCount())
+                      if not self.topLevelItem(k).isExpanded()}
         self.clear()
         if doc is None:
             return
         from ..commands import run
+        from .dialogs import swatch
         items = run("Comment.List", doc)
         replies: dict[int, list] = {}
         for c in items:
             if c["reply_to"]:
                 replies.setdefault(c["reply_to"], []).append(c)
+        pages: dict[int, QTreeWidgetItem] = {}
+        tops = [c for c in items if not c["reply_to"]]
+        counts: dict[int, int] = {}
+        for c in tops:
+            counts[c["page"]] = counts.get(c["page"], 0) + 1
 
-        def add(c, depth):
-            text = c["content"].replace("\n", " ")
-            state = f"  [{c['state']}]" if c["state"] else ""
-            head = ("    ↳ " * depth) + (f"{c['author']}" if depth else f"p.{c['page']}  {c['type']}  {c['author']}")
-            it = QListWidgetItem(f"{head}{state}\n{'      ' * depth}{text[:80]}")
-            it.setData(ROLE, (c["page"] - 1, c["xref"]))
-            self.addItem(it)
+        def add(parent, c):
+            text = " ".join((c["marked"] or c["content"]).split())
+            if len(text) > 120:
+                text = text[:118] + "…"
+            state = f"  [{tr(c['state'])}]" if c["state"] else ""
+            head = tr(c["kind"]) if not c["reply_to"] else tr("Reply")
+            who = f" — {c['author']}" if c["author"] else ""
+            it = QTreeWidgetItem(parent, [f"{head}{who}{state}" + (f"\n{text}" if text else "")])
+            it.setData(0, ROLE, (c["page"] - 1, c["xref"]))
+            if c["color"] and not c["reply_to"]:
+                it.setIcon(0, swatch(c["color"], 12))
+            tip = c["content"] or c["marked"]
+            date = c["date"][2:10] if c["date"].startswith("D:") else ""
+            if date:
+                tip = f"{date[:4]}-{date[4:6]}-{date[6:8]}  {c['author']}\n{tip}"
+            it.setToolTip(0, tip)
             for r in replies.get(c["xref"], []):
-                add(r, depth + 1)
-        for c in items:
-            if not c["reply_to"]:
-                add(c, 0)
+                add(it, r)
+            it.setExpanded(True)
+
+        for c in tops:
+            pg = c["page"]
+            if pg not in pages:
+                top = QTreeWidgetItem(self, [tr("Page {n} ({count})", n=pg, count=counts[pg])])
+                top.setData(0, ROLE + 1, pg)
+                f = top.font(0)
+                f.setBold(True)
+                top.setFont(0, f)
+                top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
+                pages[pg] = top
+            add(pages[pg], c)
+        for pg, top in pages.items():
+            top.setExpanded(pg not in collapsed)        # pages the user folded stay folded
+        if not tops:
+            empty = QTreeWidgetItem(self, [tr("No comments yet. Use the Comment tab, or select text and right-click.")])
+            empty.setFlags(Qt.NoItemFlags)

@@ -890,4 +890,8 @@ STRINGS = {
     'Page {n} — Alt+Left goes back': 'الصفحة {n} — Alt+يسار للعودة',
     'Open link': 'فتح الرابط',
     'Open this address in the browser?\n\n{url}': 'فتح هذا العنوان في المتصفح؟\n\n{url}',
+    'File attachment': 'ملف مرفق',
+    'Redaction mark': 'علامة تنقيح',
+    'Page {n} ({count})': 'الصفحة {n} ({count})',
+    'No comments yet. Use the Comment tab, or select text and right-click.': 'لا توجد تعليقات بعد. استخدم تبويب التعليق، أو حدّد نصًا وانقر بزر الفأرة الأيمن.',
 }

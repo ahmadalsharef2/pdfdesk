@@ -298,10 +298,48 @@ def list_comments(doc):
                 states[parent] = state[1]
                 continue
             out.append({"page": p.number + 1, "xref": a.xref, "type": a.type[1], "author": a.info.get("title", ""),
-                        "content": a.info.get("content", ""), "rect": tuple(a.rect), "reply_to": parent})
+                        "content": a.info.get("content", ""), "rect": tuple(a.rect), "reply_to": parent,
+                        "kind": _kind(doc, a), "color": tuple(a.colors.get("stroke") or a.colors.get("fill") or ()),
+                        "date": a.info.get("modDate") or a.info.get("creationDate") or "",
+                        "marked": _marked_text(p, a)})
     for c in out:
         c["state"] = "" if states.get(c["xref"], "None") == "None" else states.get(c["xref"], "")
     return out
+
+
+# what people call each kind of comment (the tool that makes it), by PDF subtype
+KINDS = {"Highlight": "Highlight", "Underline": "Underline", "StrikeOut": "Strikeout", "Squiggly": "Squiggly",
+         "Text": "Note", "FreeText": "Text box", "Square": "Rectangle", "Circle": "Oval", "Line": "Line",
+         "Polygon": "Polygon", "PolyLine": "Polyline", "Ink": "Pencil", "Stamp": "Stamp",
+         "FileAttachment": "File attachment", "Caret": "Insert text", "Redact": "Redaction mark"}
+
+
+def _kind(doc, a) -> str:
+    """The name of the tool that makes a comment like this one: "Typewriter", not "FreeText"."""
+    sub = a.type[1]
+    if sub == "FreeText":
+        it = doc.xref_get_key(a.xref, "IT")[1]
+        if it == "/FreeTextTypeWriter":
+            return "Typewriter"
+        if it == "/FreeTextCallout" or doc.xref_get_key(a.xref, "CL")[0] == "array":
+            return "Callout"
+    if sub == "Line" and "Arrow" in doc.xref_get_key(a.xref, "LE")[1]:
+        return "Arrow"
+    if sub == "Polygon" and doc.xref_get_key(a.xref, "BE/S")[1] == "/C":
+        return "Cloud"
+    if sub == "Highlight" and doc.xref_get_key(a.xref, AREA)[1] == "true":
+        return "Area highlight"
+    return KINDS.get(sub, sub)
+
+
+def _marked_text(page, a) -> str:
+    """The page text a highlight, underline, strikeout or squiggly marks."""
+    if a.type[0] not in (pymupdf.PDF_ANNOT_HIGHLIGHT, pymupdf.PDF_ANNOT_UNDERLINE, pymupdf.PDF_ANNOT_STRIKE_OUT,
+                         pymupdf.PDF_ANNOT_SQUIGGLY):
+        return ""
+    v = a.vertices or []
+    rects = [pymupdf.Quad(v[k:k + 4]).rect for k in range(0, len(v) - 3, 4)] or [a.rect]
+    return " ".join(page.get_textbox(r).strip() for r in rects).strip()
 
 
 HIDDEN_FLAGS = pymupdf.PDF_ANNOT_IS_HIDDEN | pymupdf.PDF_ANNOT_IS_NO_VIEW
