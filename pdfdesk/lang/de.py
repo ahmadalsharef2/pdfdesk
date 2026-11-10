@@ -894,4 +894,5 @@ STRINGS = {
     'Redaction mark': 'Schwärzungsmarkierung',
     'Page {n} ({count})': 'Seite {n} ({count})',
     'No comments yet. Use the Comment tab, or select text and right-click.': 'Noch keine Kommentare. Die Registerkarte Kommentar verwenden oder Text auswählen und rechtsklicken.',
+    'This file is not XML, so it is no e-invoice.': 'Diese Datei ist kein XML und damit keine E-Rechnung.',
 }

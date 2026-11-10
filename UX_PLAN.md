@@ -169,3 +169,20 @@ Batch 3:
   web links ask before opening the browser. PyMuPDF gives named destinations in PDF space (y up); handled.
 - Hovering on a tax form cost 23 ms per mouse move (fields read on every move); now 0.45 ms (cached per edit).
 - Tab in the page of a form document opens its first field.
+
+Batch 4 and 5:
+- Drop files onto the window to open them (PDFs open; Word files, images and the like are converted).
+- Comments panel: grouped by page, plain names ("Typewriter", not "FreeText"), color swatch, author, the text
+  a highlight marks; clicking scrolls the comment into view and selects it.
+- A click on the page ends an in-place edit (it no longer depends on the editor losing focus); after new text,
+  that click only finishes it.
+- Undo history is capped at 768 MB besides 30 steps (a big scan kept 30 whole copies in memory).
+- Typewriter boxes with Arabic, Greek or CJK text were measured with Helvetica and came out too narrow.
+- Choosing a file that is not XML as an e-invoice says so instead of showing the XML parser's error.
+
+## Still open (found, not done)
+
+- Edit Text reflow sets justified paragraphs ragged-right.
+- Typewriter comments have no color swatch in the Comments panel (their color is the text color).
+- OCR and conversions run in the window's thread: progress and Cancel work, the rest of the window waits.
+- The ribbon shows a horizontal scrollbar when a tab is wider than the window (German, small screens).

@@ -894,4 +894,5 @@ STRINGS = {
     'Redaction mark': 'علامة تنقيح',
     'Page {n} ({count})': 'الصفحة {n} ({count})',
     'No comments yet. Use the Comment tab, or select text and right-click.': 'لا توجد تعليقات بعد. استخدم تبويب التعليق، أو حدّد نصًا وانقر بزر الفأرة الأيمن.',
+    'This file is not XML, so it is no e-invoice.': 'هذا الملف ليس XML، فهو ليس فاتورة إلكترونية.',
 }

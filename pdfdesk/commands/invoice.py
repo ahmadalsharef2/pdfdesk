@@ -21,6 +21,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import pymupdf
 from lxml import etree
 
+from ..lang import tr
 from .registry import command
 
 NS = {
@@ -253,7 +254,10 @@ def _read_ubl(root) -> dict:
 
 
 def parse(data: bytes) -> dict:
-    root = etree.fromstring(data, _parser())
+    try:
+        root = etree.fromstring(data, _parser())
+    except etree.XMLSyntaxError:
+        raise ValueError(tr("This file is not XML, so it is no e-invoice.")) from None
     name = etree.QName(root).localname
     if name == "CrossIndustryInvoice":
         inv = _read_cii(root)

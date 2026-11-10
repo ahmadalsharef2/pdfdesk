@@ -167,12 +167,22 @@ def file_attachment(doc, page, point, path: str, author=None, description=None):
 
 
 # ---- typewriter ------------------------------------------------------------------------------------
+def _text_width(text: str, size: float) -> float:
+    """Width of a line as MuPDF sets it in a text comment: Helvetica, and a Unicode fallback font for what
+    Helvetica lacks (Arabic, Greek, CJK…); measuring everything with Helvetica made such boxes too narrow."""
+    if all(ord(ch) < 256 for ch in text):
+        return pymupdf.get_text_length(text, "helv", size)
+    from ..core import fonts
+    f = pymupdf.Font(fontfile=fonts.unicode_font())
+    return f.text_length(text, size) * 1.08
+
+
 @command("Comment.Typewriter")
 def typewriter(doc, page, point, text: str, fontsize=12, color=(0, 0, 0), author=None):
     p = doc[page - 1]
     x, y = pymupdf.Point(point)
     rows = text.split("\n")
-    w = max(pymupdf.get_text_length(r, "helv", fontsize) for r in rows) + fontsize
+    w = max(_text_width(r, fontsize) for r in rows) + fontsize
     rect = pymupdf.Rect(x, y, min(x + w, p.rect.width), y + fontsize * 1.3 * len(rows) + 4)
     a = p.add_freetext_annot(rect, text, fontsize=fontsize, fontname="helv", text_color=color, border_width=0)
     doc.xref_set_key(a.xref, "IT", "/FreeTextTypeWriter")
