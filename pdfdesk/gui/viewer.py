@@ -6,6 +6,7 @@ Undo/redo keeps whole-document snapshots, which also covers changes made by pike
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 import pymupdf
@@ -28,9 +29,9 @@ from ..commands import objects, search
 from ..commands.comment import DEFAULT_COLORS, annot_at, text_between
 from ..commands.comment import style as comment_style
 from ..lang import tr
-from . import clipboard
+from . import clipboard, prefs
 from .dialogs import fill_color_menu, qcolor, swatch
-from .text_editor import InlineTextEditor
+from .text_editor import InlineFieldEditor, InlineTextEditor
 
 RECT_TOOLS = {"textbox", "rectangle", "oval", "area-highlight", "redact", "whiteout", "sign-place",
               "digital-sign", "stamp", "image", "link", "field-text", "field-check", "field-radio", "field-combo",
@@ -54,6 +55,12 @@ ANNOT_TOOLS = {"Highlight": "highlight", "Underline": "underline", "StrikeOut": 
                "Text": "note", "FreeText": "typewriter", "Square": "rectangle", "Circle": "oval", "Line": "line",
                "Polygon": "polygon", "PolyLine": "polyline", "Ink": "pencil"}
 HANDLE = 4                                                     # half size of a resize handle, in pixels
+TYPED_TOOLS = {"typewriter", "add-text"}                       # click, then type on the page
+FILLABLE = {pymupdf.PDF_WIDGET_TYPE_TEXT: "text", pymupdf.PDF_WIDGET_TYPE_COMBOBOX: "combo",
+            pymupdf.PDF_WIDGET_TYPE_LISTBOX: "list"}
+TOGGLES = {pymupdf.PDF_WIDGET_TYPE_CHECKBOX, pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON, pymupdf.PDF_WIDGET_TYPE_BUTTON}
+NO_TEXT_HINT = "This page has no text layer (a scan). Run Convert > OCR to select, mark or edit its text."
+ARROWS = {Qt.Key_Left: (-1, 0), Qt.Key_Right: (1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}
 
 
 class DocView(QAbstractScrollArea):
@@ -95,15 +102,25 @@ class DocView(QAbstractScrollArea):
         self._ink: tuple[int, list] | None = None
         self._hover_line = None
         self._announced = None
-        self._editor: InlineTextEditor | None = None
-        self._edit_target = None
+        self._editor: InlineTextEditor | InlineFieldEditor | None = None
+        self._edit_target: dict | None = None                  # what the open editor changes; see _commit_editor
+        self._last_checkpoint = 0.0
         self.viewport().setStyleSheet("background:#6b6b6b")
         self.viewport().setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.relayout()
 
     # ---- document replacement and undo -----------------------------------------------------------
+    MERGE_S = 0.8                               # arrow-key moves this close together are one undo step
+
     def checkpoint(self, label: str):
+        now = time.monotonic()
+        merge = (self.undo_stack and label == self.undo_stack[-1][0] and now - self._last_checkpoint < self.MERGE_S
+                 and label in (tr("Nudge object"), tr("Nudge comment")))
+        self._last_checkpoint = now
+        if merge:
+            self.redo_stack.clear()
+            return
         self.undo_stack.append((label, self.doc.tobytes()))
         if len(self.undo_stack) > self.UNDO_LIMIT:
             self.undo_stack.pop(0)
@@ -187,13 +204,17 @@ class DocView(QAbstractScrollArea):
         super().resizeEvent(e)
         if not (self.fit_mode and self._fit()):
             self._update_bars()
+        self._place_editor()
+
+    def _place_editor(self):
         if self._editor is not None:
-            i, ln = self._edit_target
-            self._editor.place(self.page_rect_to_view(i, ln.rect))
+            t = self._edit_target
+            self._editor.place(self.page_rect_to_view(t["page"], t["rect"]))
 
     def set_zoom(self, z: float, anchor=None, fit: str | None = None):
         """Zoom so that the document point under `anchor` (a viewport position; default: the centre, or the top
         when the view is at the top) stays where it is. An explicit zoom ends Fit Width / Fit Page."""
+        self._commit_editor()                   # its font size follows the zoom it was opened at
         z = max(0.1, min(z, 8.0))
         self.fit_mode = fit
         if abs(z - self.zoom) < 1e-9:
@@ -338,6 +359,10 @@ class DocView(QAbstractScrollArea):
             self.pageChanged.emit(now[0])
 
     def _paint_overlays(self, p: QPainter):
+        t = self._edit_target
+        if self._editor is not None and t["kind"] in ("line", "annot"):
+            # the text being edited is hidden, so its old glyphs do not show around the editor
+            p.fillRect(self.page_rect_to_view(t["page"], t["rect"]).adjusted(-2, -2, 2, 2), QColor("#fffbe6"))
         if self.text_sel:
             i, a, b = self.text_sel
             for r, _t in self._text_between(i, a, b):
@@ -393,8 +418,7 @@ class DocView(QAbstractScrollArea):
                     p.drawPath(path)
 
     def scrollContentsBy(self, dx, dy):
-        if self._editor is not None:
-            self._commit_editor()
+        self._place_editor()                    # the editor moves with its text; scrolling does not end the edit
         self._announce()
         self.viewport().update()
 
@@ -443,12 +467,16 @@ class DocView(QAbstractScrollArea):
                 return name
         return None
 
-    def _start_drag(self, mode: str, pos, corner: str | None = None):
+    def _start_drag(self, mode: str, pos, corner: str | None = None, shift: bool = False):
         i, rect, _ = self._selection()
         _j, pt = self.view_to_page(pos, clamp_page=i)
+        keep = False
+        if self.obj_sel:
+            o = next((o for o in self.page_objects(i) if o.index == self.obj_sel[1]), None)
+            keep = o is not None and o.kind != "path"            # images and text keep their proportions
         self._drag = {"mode": mode, "corner": corner, "page": i, "page_to": i, "start": pt,
                       "orig": pymupdf.Rect(rect), "rect": pymupdf.Rect(rect), "pos": pos,
-                      "keep_ratio": self.obj_sel is not None}
+                      "keep_ratio": keep != shift}
 
     def _update_drag(self, pos):
         d = self._drag
@@ -535,7 +563,7 @@ class DocView(QAbstractScrollArea):
         if self.tool in ("hand", "edit-object"):
             corner = self._handle_at(pos)
             if corner:
-                self._start_drag("resize", pos, corner)
+                self._start_drag("resize", pos, corner, bool(e.modifiers() & Qt.ShiftModifier))
                 return
         if self.tool == "edit-object":
             if i is not None and self.select_object_at(i, pt):
@@ -543,9 +571,9 @@ class DocView(QAbstractScrollArea):
             return
         if self.tool == "hand":
             if i is not None:
-                w = next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None)
+                w = self._widget_at(i, pt)
                 if w is not None:
-                    self._emit(tool="fill-field", page=i + 1, xref=w.xref)
+                    self.fill_field(i, w)
                     return
                 xref = annot_at(self.doc, i + 1, pt)
                 self.selected = (i, xref) if xref else None
@@ -572,6 +600,8 @@ class DocView(QAbstractScrollArea):
             ln = edit_cmds.line_at(self.doc, i + 1, pt)
             if ln:
                 self._open_editor(i, ln)
+            elif not self._page_words(i):
+                self._hint(NO_TEXT_HINT)
             return
         if self.tool in POLY_TOOLS:
             if self._poly and self._poly[0] == i:
@@ -600,8 +630,7 @@ class DocView(QAbstractScrollArea):
             if corner:
                 self.viewport().setCursor(Qt.SizeFDiagCursor if corner in ("tl", "br") else Qt.SizeBDiagCursor)
             else:
-                over = self._over_object(pos, added_only=self.tool == "hand")
-                self.viewport().setCursor(Qt.SizeAllCursor if over else CURSORS.get(self.tool, Qt.CrossCursor))
+                self.viewport().setCursor(self._hover_cursor(pos))
         if self._pan:
             start, hx, vy = self._pan
             self.horizontalScrollBar().setValue(int(hx - (pos.x() - start.x())))
@@ -625,9 +654,41 @@ class DocView(QAbstractScrollArea):
         if self._press or self._poly:
             self.viewport().update()
 
-    def _over_object(self, pos, added_only: bool = False) -> bool:
+    def _hover_cursor(self, pos):
+        """Hand: a form field shows it can be filled, a comment or added object that it can be picked up."""
         i, pt = self.view_to_page(pos)
-        return i is not None and self._object_at(i, pt, added_only) is not None
+        if i is not None:
+            if self.tool == "hand":
+                w = self._widget_at(i, pt)
+                if w is not None:
+                    return Qt.IBeamCursor if w.field_type in FILLABLE else Qt.PointingHandCursor
+                if annot_at(self.doc, i + 1, pt):
+                    return Qt.SizeAllCursor
+            if self._object_at(i, pt, added_only=self.tool == "hand") is not None:
+                return Qt.SizeAllCursor
+        return CURSORS.get(self.tool, Qt.CrossCursor)
+
+    def _widget_at(self, i: int, pt):
+        page = self.doc[i]
+        w = next((w for w in page.widgets() if w.rect.contains(pt)), None)
+        if w is not None:
+            w.keep_page = page              # PyMuPDF unbinds a widget once its page object is collected
+        return w
+
+    def _widget(self, i: int, xref: int):
+        page = self.doc[i]
+        w = next((w for w in page.widgets() if w.xref == xref), None)
+        if w is not None:
+            w.keep_page = page
+        return w
+
+    def _page_words(self, i: int) -> list:
+        if i not in self._words:
+            self._words[i] = self.doc[i].get_text("words")
+        return self._words[i]
+
+    def _hint(self, text: str):
+        self._emit(tool="hint", text=tr(text))
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.LeftButton:
@@ -650,6 +711,8 @@ class DocView(QAbstractScrollArea):
         t = self.tool
         if t in INK_TOOLS:
             pass  # strokes collect until the user presses Enter or switches tool
+        elif t in TEXT_TOOLS and moved and not self._page_words(i):
+            self._hint(NO_TEXT_HINT)
         elif t == "select":
             self.text_sel = (i, start, end) if moved and self._text_between(i, start, end) else None
         elif t in RECT_TOOLS:
@@ -660,6 +723,8 @@ class DocView(QAbstractScrollArea):
         elif t in MARKUP_TOOLS:
             if moved:
                 self._emit(tool=t, page=page, start=start, stop=end)
+        elif t in TYPED_TOOLS:
+            self.type_new_text(i, start, t)
         elif t in POINT_TOOLS:
             self._emit(tool=t, page=page, point=start)
         self.viewport().update()
@@ -668,9 +733,32 @@ class DocView(QAbstractScrollArea):
         if self.tool in POLY_TOOLS and self._poly:
             self.finish_shape()
             return
+        i, pt = self.view_to_page(e.position())
+        if i is None:
+            return
+        if self.tool in TEXT_TOOLS:
+            w = next((w for w in self._page_words(i) if pymupdf.Rect(w[:4]).contains(pt)), None)
+            if w is not None:
+                mid = (w[1] + w[3]) / 2
+                a, b = pymupdf.Point(w[0] + 0.1, mid), pymupdf.Point(w[2] - 0.1, mid)
+                if self.tool == "select":
+                    self.text_sel = (i, a, b)
+                    self.viewport().update()
+                else:
+                    self._emit(tool=self.tool, page=i + 1, start=a, stop=b)
+            return
         if self.tool == "hand" and self.selected:
             i, xref = self.selected
-            self._emit(tool="edit-annot", page=i + 1, xref=xref)
+            if not self.edit_comment_text(i, xref):
+                self._emit(tool="edit-annot", page=i + 1, xref=xref)
+            return
+        if self.tool in ("edit-object", "hand") and self.obj_sel:
+            o = next((o for o in self.page_objects(self.obj_sel[0]) if o.index == self.obj_sel[1]), None)
+            if o is not None and (o.kind == "text" or o.size):
+                ln = edit_cmds.line_at(self.doc, i + 1, pt)
+                if ln:
+                    self.obj_sel = None
+                    self._open_editor(i, ln)
 
     def finish_shape(self):
         if self._poly:
@@ -690,6 +778,14 @@ class DocView(QAbstractScrollArea):
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and (self.obj_sel or self.selected):
             self.delete_selected()
             return
+        if e.key() in ARROWS and (self.obj_sel or self.selected) and not e.modifiers() & Qt.ControlModifier:
+            self.nudge(*ARROWS[e.key()], 10 if e.modifiers() & Qt.ShiftModifier else 1)
+            return
+        if e.matches(QKeySequence.StandardKey.SelectAll):
+            self.select_page_text(self.current_page())
+            return
+        if self._navigate(e):
+            return
         if e.matches(QKeySequence.StandardKey.Copy):
             if self.text_sel:
                 QGuiApplication.clipboard().setText(self.selected_text())
@@ -706,11 +802,39 @@ class DocView(QAbstractScrollArea):
             self.finish_shape()
             return
         if e.key() == Qt.Key_Escape:
+            busy = self._poly or self._ink or self._press or self._drag or self.selected or self.text_sel or self.obj_sel
             self._poly = self._ink = self._press = self._drag = None
             self.selected = self.text_sel = self.obj_sel = None
             self.viewport().update()
+            if not busy and self.tool != "hand":                # nothing to back out of: back to the Hand tool
+                self._emit(tool="set-tool", name="hand")
             return
         super().keyPressEvent(e)
+
+    def _navigate(self, e) -> bool:
+        """Home / End and Ctrl+Home / Ctrl+End go to the first and last page; Space and Shift+Space page."""
+        k, bar = e.key(), self.verticalScrollBar()
+        if k == Qt.Key_Home:
+            bar.setValue(0)
+        elif k == Qt.Key_End:
+            bar.setValue(bar.maximum())
+        elif k == Qt.Key_Space:
+            bar.setValue(bar.value() + (-1 if e.modifiers() & Qt.ShiftModifier else 1) * bar.pageStep())
+        else:
+            return False
+        return True
+
+    def nudge(self, dx: int, dy: int, step: float):
+        """Move the selection by step points (arrow keys; Shift: 10 points)."""
+        sel = self._selection()
+        if not sel:
+            return
+        i, rect, _ = sel
+        dx, dy = dx * step, dy * step
+        if self.obj_sel:
+            self._emit(tool="object-rect", page=i + 1, index=self.obj_sel[1], rect=rect + (dx, dy, dx, dy), nudge=True)
+        else:
+            self._emit(tool="move-annot", page=i + 1, xref=self.selected[1], dx=dx, dy=dy, nudge=True)
 
     def paste_here(self):
         """Paste at the mouse position when it is over a page, else onto the current page."""
@@ -748,7 +872,7 @@ class DocView(QAbstractScrollArea):
             self._annot_menu(m, i, xref)
         elif self.tool in ("hand", "edit-object") and self.select_object_at(i, pt, added_only=self.tool == "hand"):
             self._object_menu(m, i)
-        elif w := next((w for w in self.doc[i].widgets() if w.rect.contains(pt)), None):
+        elif w := self._widget_at(i, pt):
             self._field_menu(m, i, w)
         else:
             self._page_menu(m, i, pt)
@@ -875,9 +999,9 @@ class DocView(QAbstractScrollArea):
         QGuiApplication.clipboard().setImage(QImage.fromData(data))
 
     def _field_menu(self, m: QMenu, i: int, w):
-        page, xref, name = i + 1, w.xref, w.field_name
+        xref, name = w.xref, w.field_name
         value = w.field_value if isinstance(w.field_value, str) else ""
-        m.addAction(tr("Fill in…"), lambda: self._emit(tool="fill-field", page=page, xref=xref))
+        m.addAction(tr("Fill in…"), lambda: self.fill_field(i, self._widget(i, xref)))
         if value:
             m.addAction(tr("Copy Value"), lambda: QGuiApplication.clipboard().setText(value))
         m.addAction(tr("Clear Value"), lambda: self._emit(tool="field-reset", names=[name]))
@@ -902,8 +1026,8 @@ class DocView(QAbstractScrollArea):
             a.setChecked(self.tool == tool)
         m.addSeparator()
         m.addAction(tr("Add note here…"), lambda: self._emit(tool="note", page=page, point=pt))
-        m.addAction(tr("Add typewriter text here…"), lambda: self._emit(tool="typewriter", page=page, point=pt))
-        m.addAction(tr("Add text here…"), lambda: self._emit(tool="add-text", page=page, point=pt))
+        m.addAction(tr("Add typewriter text here…"), lambda: self.type_new_text(i, pt, "typewriter"))
+        m.addAction(tr("Add text here…"), lambda: self.type_new_text(i, pt, "add-text"))
         m.addAction(tr("Add image here…"), lambda: self._emit(tool="image-here", page=page, point=pt))
         m.addAction(tr("Add Bookmark for This Page"), lambda: self._emit(tool="bookmark-here", page=page, title=tr("Page {n}", n=page)))
         m.addSeparator()
@@ -937,9 +1061,9 @@ class DocView(QAbstractScrollArea):
             self._emit(tool="delete-annot", page=i + 1, xref=xref)
 
     def select_page_text(self, i: int):
-        if i not in self._words:
-            self._words[i] = self.doc[i].get_text("words")
-        w = self._words[i]
+        w = self._page_words(i)
+        if not w:
+            self._hint(NO_TEXT_HINT)
         if w:
             self.text_sel = (i, pymupdf.Point(w[0][:2]), pymupdf.Point(w[-1][2:4]))
             self.viewport().update()
@@ -960,24 +1084,119 @@ class DocView(QAbstractScrollArea):
         c.setAlpha(110 if tool == "highlight" else 70)
         return c
 
-    # ---- inline text editor (Edit Text tool) -------------------------------------------------------------
-    def _open_editor(self, i: int, ln):
+    # ---- editors on the page: Edit Text, new text, a comment's text, form fields --------------------------
+    def _start_editor(self, ed, target: dict):
+        """target: what the editor changes, {"kind": "line" | "new" | "annot" | "field", "page", "rect", …}."""
         self._commit_editor()
-        ed = InlineTextEditor(self.viewport(), ln.text, ln.size, ln.color, self.zoom)
-        ed.place(self.page_rect_to_view(i, ln.rect))
-        ed.committed.connect(self._commit_editor)
+        self._editor, self._edit_target = ed, target
+        if isinstance(ed, InlineFieldEditor):
+            ed.committed.connect(self._commit_editor)
+        else:
+            ed.committed.connect(lambda: self._commit_editor())
         ed.cancelled.connect(self._close_editor)
+        self._place_editor()
         ed.show()
         ed.focus()
-        self._editor, self._edit_target = ed, (i, ln)
+        self.viewport().update()
 
-    def _commit_editor(self):
-        """Keep the edit: the text, and the size or color when they were changed."""
+    def _open_editor(self, i: int, ln):
+        """Edit one line of page text where it is."""
+        ed = InlineTextEditor(self.viewport(), ln.text, ln.size, ln.color, self.zoom)
+        self._start_editor(ed, {"kind": "line", "page": i, "rect": ln.rect, "line": ln})
+
+    def type_new_text(self, i: int, point, tool: str):
+        """Typewriter and Add Text: type at the point clicked; Enter starts a new line, clicking elsewhere or
+        Escape keeps the text, Ctrl+Enter too."""
+        size = prefs.get_float(f"text_size/{tool}", 10.0)
+        color = self.color_for(tool) or (0, 0, 0)
+        ed = InlineTextEditor(self.viewport(), "", size, color, self.zoom, multiline=True, escape_keeps=True)
+        pt = pymupdf.Point(point)
+        rect = pymupdf.Rect(pt.x, pt.y, pt.x + 4, pt.y + size * 1.3 + 4)
+        self._start_editor(ed, {"kind": "new", "page": i, "rect": rect, "point": pt, "tool": tool})
+
+    def edit_comment_text(self, i: int, xref: int) -> bool:
+        """A typewriter or text box comment: change its text where it is. False for other comments."""
+        st = comment_style(self.doc, i + 1, xref)
+        if st["type"] != "FreeText":
+            return False
+        page = self.doc[i]
+        a = next((a for a in page.annots() or [] if a.xref == xref), None)
+        if a is None:
+            return False
+        ed = InlineTextEditor(self.viewport(), st["content"], st.get("fontsize") or 11, st.get("text_color"),
+                              self.zoom, multiline=True, escape_keeps=False)
+        self._start_editor(ed, {"kind": "annot", "page": i, "rect": pymupdf.Rect(a.rect), "xref": xref,
+                                "text": st["content"], "size": st.get("fontsize"), "color": st.get("text_color")})
+        return True
+
+    def fill_field(self, i: int, w):
+        """Type or pick a field's value on the page; a check box or radio button just toggles."""
+        if self.readonly or w.field_type not in FILLABLE or w.field_flags & 1:      # bit 1: read-only field
+            self._emit(tool="fill-field", page=i + 1, xref=w.xref)
+            return
+        kind = FILLABLE[w.field_type]
+        opts = [o[1] if isinstance(o, (list, tuple)) else o for o in (w.choice_values or [])]
+        value = w.field_value if isinstance(w.field_value, str) else ""
+        rect = pymupdf.Rect(w.rect)
+        px = int((w.text_fontsize or min(12.0, rect.height * 0.7)) * self.zoom)
+        ed = InlineFieldEditor(self.viewport(), kind, value, opts, px, multiline=bool(w.field_flags & (1 << 12)),
+                               editable=bool(w.field_flags & (1 << 18)))
+        self._start_editor(ed, {"kind": "field", "page": i, "rect": rect, "xref": w.xref, "value": value})
+
+    def _fields(self) -> list[tuple[int, int]]:
+        """(page index, xref) of every field that can be typed into, in document order."""
+        out = []
+        for i in range(self.doc.page_count):
+            page = self.doc[i]
+            out += [(i, w.xref) for w in page.widgets() if w.field_type in FILLABLE and not w.field_flags & 1]
+        return out
+
+    def _next_field(self, target: dict, step: int):
+        fields = self._fields()
+        here = (target["page"], target["xref"])
+        if here not in fields:
+            return
+        i, xref = fields[(fields.index(here) + step) % len(fields)]
+        w = self._widget(i, xref)
+        if w is None:
+            return
+        r = self.page_rect_to_view(i, w.rect)
+        if r.top() < 0 or r.bottom() > self.viewport().height():
+            bar = self.verticalScrollBar()
+            bar.setValue(int(bar.value() + r.top() - self.viewport().height() / 3))
+        self.fill_field(i, w)
+
+    def _commit_editor(self, step: int = 0):
+        """Keep what the open editor holds, as one undoable step; step moves on to the next form field."""
         if self._editor is None:
             return
-        ed, (i, ln) = self._editor, self._edit_target
-        text, size, color = ed.text(), ed.size(), ed.color()
+        ed, t = self._editor, self._edit_target
         self._close_editor()
+        page = t["page"] + 1
+        if t["kind"] == "field":
+            value = ed.value()
+            if value != t["value"]:
+                self._emit(tool="field-value", page=page, xref=t["xref"], value=value)
+            if step:
+                self._next_field(t, step)
+            return
+        text, size, color = ed.text(), ed.size(), ed.color()
+        if t["kind"] == "new":
+            if text.strip():
+                self._emit(tool=t["tool"], page=page, point=t["point"], text=text.rstrip("\n"), size=size, color=color)
+            return
+        if t["kind"] == "annot":
+            style = {}
+            if text != t["text"]:
+                style["text"] = text
+            if t["size"] and abs(size - t["size"]) > 0.05:
+                style["fontsize"] = size
+            if color and t["color"] and any(abs(a - b) > 1 / 255 for a, b in zip(color, t["color"])):
+                style["text_color"] = color
+            if style:
+                self._emit(tool="annot-style", page=page, xref=t["xref"], style=style)
+            return
+        ln = t["line"]
         changed = {}
         if abs(size - ln.size) > 0.05:
             changed["size"] = size
@@ -985,7 +1204,7 @@ class DocView(QAbstractScrollArea):
             changed["color"] = color
         if text != ln.text or changed:
             center = ln.rect.tl + (ln.rect.br - ln.rect.tl) / 2
-            self._emit(tool="edit-text-commit", page=i + 1, point=center, text=text, **changed)
+            self._emit(tool="edit-text-commit", page=page, point=center, text=text, **changed)
 
     def _close_editor(self):
         if self._editor is not None:
@@ -995,6 +1214,7 @@ class DocView(QAbstractScrollArea):
             self._edit_target = None
             self._hover_line = None
             self.setFocus()
+            self.viewport().update()
 
     # ---- search ----------------------------------------------------------------------------------------------
     def find(self, text: str) -> int:

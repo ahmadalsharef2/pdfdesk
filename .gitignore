@@ -4,3 +4,4 @@ __pycache__/
 tests/corpus/foxit/
 build/
 dist/
+tests/corpus/web/

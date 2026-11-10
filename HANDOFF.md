@@ -62,6 +62,14 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q            # tests
   (`gui/text_editor.py`) has both; text objects have a Font size submenu (`Object.FontSize`). Settings go
   through `gui/prefs.py`. `Main.on_tool` is a table of handlers grouped by feature (`_build_handlers`).
 
+- Editors on the page (`gui/text_editor.py`): `DocView._start_editor` opens one at a time; `_edit_target["kind"]`
+  is "line" (Edit Text), "new" (Typewriter / Add Text), "annot" (a text comment's text) or "field" (form field,
+  Tab moves on). `_commit_editor` turns it into one tool action. The editor follows scrolling and zoom changes.
+- Tool actions that make a comment (`Main.COMMENT_ACTIONS`) select the new comment afterwards. Arrow-key nudges
+  use their own undo labels ("Nudge …"), which `DocView.checkpoint` merges when they come within 0.8 s.
+- `tests/sweep_gui.py` presses every ribbon action; `tests/journeys.py` drives user journeys with real events on
+  many documents (downloaded ones in `tests/corpus/web/`, git-ignored). Both are run by hand, not by pytest.
+
 ## Not built yet
 
 XFA and form JavaScript, Action Wizard (`.sequ`), veraPDF validation, accessibility, read aloud, portfolios,

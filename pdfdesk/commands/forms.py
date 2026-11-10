@@ -30,9 +30,18 @@ def _value(w):
     return w.field_value
 
 
+def _label(w) -> str:
+    """What a person calls the field: its tooltip (/TU), else the last part of its name without "[0]"."""
+    tip = (w.field_label or "").strip()
+    if tip and len(tip) <= 60:
+        return tip
+    last = re.sub(r"\[\d+\]", "", (w.field_name or "").split(".")[-1]).replace("_", " ").strip()
+    return last or tip[:60] or w.field_name or ""
+
+
 @command("Form.List")
 def list_fields(doc) -> list[dict]:
-    return [{"name": w.field_name, "type": TYPE_NAMES.get(w.field_type, "unknown"), "value": _value(w),
+    return [{"name": w.field_name, "label": _label(w), "type": TYPE_NAMES.get(w.field_type, "unknown"), "value": _value(w),
              "page": page.number + 1, "rect": tuple(w.rect), "xref": w.xref,
              "options": list(w.choice_values or []), "readonly": bool(w.field_flags & 1)}
             for page, w in _widgets(doc)]

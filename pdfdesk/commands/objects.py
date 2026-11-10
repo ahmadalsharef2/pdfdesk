@@ -132,6 +132,12 @@ def _walk(doc, page: pymupdf.Page):
         a = ins.operands
         if op in STATE_OPS and bt is None:
             state.append(ins)
+        if path_start is not None and op in STATE_OPS:
+            # colors and line width between a path and its painting operator (PyMuPDF and others write them
+            # there) belong to the path; they do not end it
+            if op == "w":
+                lw = float(a[0])
+            continue
         if op in PATH_OPS:
             if path_start is None:
                 path_start, pts = pos, []
@@ -311,8 +317,8 @@ def _rewrite(doc, page: pymupdf.Page, index: int, fn):
 
 
 def _state_after(ops, run) -> list:
-    """The state operators of a text block, to repeat after it is wrapped in q ... Q or removed."""
-    if run.kind != "text":
+    """The state operators inside a text block or a path, to repeat after it is wrapped in q ... Q or removed."""
+    if run.kind not in ("text", "path"):
         return []
     return [ins for ins in ops[run.start:run.end + 1] if str(ins.operator) in STATE_OPS]
 

@@ -66,7 +66,8 @@ TOOL_HINTS = {
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
     "replace-text": "Replace text: drag across the text to replace", "area-highlight": "Area highlight: drag",
     "note": "Note: click where the note goes", "file": "File attachment: click where it goes",
-    "typewriter": "Typewriter: click where the text goes", "textbox": "Text box: drag a box",
+    "typewriter": "Typewriter: click and type; Enter starts a new line, click elsewhere or Esc to finish",
+    "textbox": "Text box: drag a box",
     "callout": "Callout: drag from the point to the box position",
     "rectangle": "Rectangle: drag", "oval": "Oval: drag", "line": "Line: drag", "arrow": "Arrow: drag",
     "polygon": "Polygon: click points, double-click or Enter to finish",
@@ -76,7 +77,8 @@ TOOL_HINTS = {
     "edit-text": "Edit text: click a line of text and change it, its size or its color; click elsewhere or press Enter to keep it",
     "edit-object": "Edit object: click text, a shape, an image or a signature; drag to move (also onto another page), "
                    "drag a corner to resize, Ctrl+C / Ctrl+V copy and paste, Delete removes it",
-    "add-text": "Add text: click where the text goes", "image": "Add image: drag a box",
+    "add-text": "Add text: click and type; Enter starts a new line, click elsewhere or Esc to finish",
+    "image": "Add image: drag a box",
     "redact": "Mark for redaction: drag over text or images", "whiteout": "Whiteout: drag over what to erase",
     "sign-place": "Place signature: click or drag a box", "digital-sign": "Digital signature: drag a box",
 }
@@ -178,13 +180,13 @@ class Main(QMainWindow):
         self.docs.addTab(self.start, tr("Start"))
         self.docs.tabBar().setTabButton(0, QTabBar.RightSide, None)
 
-        self.split = QSplitter()
-        self.split.addWidget(self.nav)
-        self.split.addWidget(self.docs)
-        self.split.setStretchFactor(1, 1)
-        self.split.setSizes([230, 1100])
-        self.split.setChildrenCollapsible(False)
-        v.addWidget(self.split, 1)
+        self.splitter = QSplitter()
+        self.splitter.addWidget(self.nav)
+        self.splitter.addWidget(self.docs)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([230, 1100])
+        self.splitter.setChildrenCollapsible(False)
+        v.addWidget(self.splitter, 1)
         v.addWidget(self._build_bottom_bar())
         self.setCentralWidget(central)
         self._show_nav(0)
@@ -214,12 +216,12 @@ class Main(QMainWindow):
         if isinstance(geo, QByteArray) and not geo.isEmpty():
             self.restoreGeometry(geo)
         if sizes and len(sizes) == 2 and all(isinstance(n, int) and n > 0 for n in sizes):
-            self.split.setSizes(sizes)
+            self.splitter.setSizes(sizes)
 
     def _remember_window(self):
         prefs.put("window/geometry", self.saveGeometry())
         if self.nav.isVisible():
-            prefs.put_json("window/split", self.split.sizes())
+            prefs.put_json("window/split", self.splitter.sizes())
 
     # ---- plumbing ------------------------------------------------------------------------------------
     def cur(self) -> DocView | None:
@@ -389,6 +391,7 @@ class Main(QMainWindow):
             self.page_spin.setValue(v.current_page() + 1)
             self.page_total.setText(f"/ {v.doc.page_count}")
             self.zoom_box.setEditText(f"{int(round(v.zoom * 100))}%")
+            self.thumbs.follow(v.current_page())
         else:
             self.page_spin.setMaximum(1)
             self.page_total.setText("/ 0")
@@ -722,7 +725,12 @@ class Main(QMainWindow):
 
     # ---- tool actions: one handler per feature -------------------------------------------------------------
     # actions that change nothing in the document, so a read-only document allows them
-    VIEW_ACTIONS = {"set-tool", "page-command", "find", "app", "tool-color", "object-export", "copy"}
+    VIEW_ACTIONS = {"set-tool", "page-command", "find", "app", "tool-color", "object-export", "copy", "hint"}
+    # actions that make one new comment, which is selected afterwards (so Delete, the arrow keys or a right-click
+    # act on it at once, as in Foxit)
+    COMMENT_ACTIONS = {"highlight", "underline", "strikeout", "squiggly", "highlight-note", "replace-text",
+                       "area-highlight", "rectangle", "oval", "line", "arrow", "polygon", "cloud", "polyline", "pencil",
+                       "stamp", "note", "file", "typewriter", "insert-text", "textbox", "callout"}
     IMAGES = "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"
 
     def on_tool(self, a: dict):
@@ -737,10 +745,23 @@ class Main(QMainWindow):
         fn = self._handlers.get(t)
         if fn is None:
             return
+        page = a.get("page")
+        before = self._annot_xrefs(v, page) if t in self.COMMENT_ACTIONS and page else None
         try:
-            return fn(a, a.get("page"))
+            res = fn(a, page)
         except Exception as e:  # noqa: BLE001
-            self.error(tr("Error"), e)
+            return self.error(tr("Error"), e)
+        if before is not None:
+            new = self._annot_xrefs(v, page) - before
+            if new:
+                v.selected, v.obj_sel = (page - 1, max(new)), None
+                v.viewport().update()
+        return res
+
+    @staticmethod
+    def _annot_xrefs(v: DocView, page: int) -> set[int]:
+        p = v.doc[page - 1]
+        return {a.xref for a in p.annots() or []}
 
     def _build_handlers(self) -> dict:
         """Action name -> handler(a, page). Grouped by feature; each runs one command as one undoable step."""
@@ -765,11 +786,13 @@ class Main(QMainWindow):
             "app": lambda a, p: {"find": lambda: (self.find_box.setFocus(), self.find_box.selectAll()),
                                  "print": self.print_doc, "properties": self.properties}[a["name"]](),
             "tool-color": lambda a, p: self._remember_tool_color(a["name"], a["color"]),
+            "hint": lambda a, p: self.msg(a["text"]),
         }
         comments = {
             "delete-annot": lambda a, p: cmd("Delete comment", "Comment.Delete", p, a["xref"]),
             "annot-rect": lambda a, p: cmd("Resize comment", "Comment.SetRect", p, a["xref"], a["rect"]),
-            "move-annot": lambda a, p: cmd("Move comment", "Comment.Move", p, a["xref"], a["dx"], a["dy"]),
+            "move-annot": lambda a, p: cmd("Nudge comment" if a.get("nudge") else "Move comment", "Comment.Move", p,
+                                           a["xref"], a["dx"], a["dy"]),
             "annot-to-page": lambda a, p: self._select_comment(a["to_page"], cmd(
                 tr("Move comment to page {n}", n=a["to_page"]), "Comment.Transfer", p, a["xref"], a["to_page"], a["rect"])),
             "edit-annot": lambda a, p: self.comment_properties(p, a["xref"]),
@@ -780,7 +803,8 @@ class Main(QMainWindow):
                                              author=self.author),
         }
         objects_ = {
-            "object-rect": lambda a, p: cmd("Move object", "Object.Transform", p, a["index"], a["rect"]),
+            "object-rect": lambda a, p: cmd("Nudge object" if a.get("nudge") else "Move object", "Object.Transform", p,
+                                            a["index"], a["rect"]),
             "delete-object": lambda a, p: cmd("Delete object", "Object.Delete", p, a["index"]),
             "object-turn": lambda a, p: (cmd("Flip object", "Object.Flip", p, a["index"], a["flip"] == "h") if "flip" in a
                                          else cmd("Rotate object", "Object.Rotate", p, a["index"], a["angle"])),
@@ -822,11 +846,11 @@ class Main(QMainWindow):
                 "Note", "Comment.Note", p, a["point"], r, author=self.author, **cw(a))),
             "file": lambda a, p: (f := pick_file("Attach file")) and cmd(
                 "Attach file", "Comment.File", p, a["point"], f, author=self.author),
-            "typewriter": lambda a, p: self._typed_text("typewriter", "Typewriter", lambda r: cmd(
+            "typewriter": lambda a, p: self._typed_text(a, "Typewriter", lambda r: cmd(
                 "Typewriter", "Comment.Typewriter", p, a["point"], r["text"], fontsize=r["size"], color=r["color"],
                 author=self.author)),
-            "add-text": lambda a, p: self._typed_text("add-text", "Add text", lambda r: cmd(
-                "Add text", "Text.Add", p, a["point"], r["text"], fontsize=r["size"], color=r["color"])),
+            "add-text": lambda a, p: self._select_last_object(p, self._typed_text(a, "Add text", lambda r: cmd(
+                "Add text", "Text.Add", p, a["point"], r["text"], fontsize=r["size"], color=r["color"]))),
             "insert-text": lambda a, p: asked("Insert text", "Text to insert:", lambda r: cmd(
                 "Insert text", "Comment.InsertText", p, a["point"], r, author=self.author)),
             "textbox": lambda a, p: a["rect"] and asked("Text box", "Text:", lambda r: cmd(
@@ -851,6 +875,7 @@ class Main(QMainWindow):
             "digital-sign": lambda a, p: a["rect"] and self.digital_sign(a),
             "link": lambda a, p: a["rect"] and self.add_link(p, a["rect"]),
             "fill-field": lambda a, p: self.fill_field(p, a["xref"]),
+            "field-value": lambda a, p: self.apply(tr("Fill field"), lambda d: run("Form.SetField", d, p, a["xref"], a["value"])),
             "field-reset": lambda a, p: cmd("Clear field" if a["names"] else "Reset form", "Form.Reset", a["names"]),
             "field-delete": self._field_delete,
             **{f"field-{k}": (lambda a, p, k=k: a["rect"] and self.add_field(k, p, a["rect"]))
@@ -859,11 +884,16 @@ class Main(QMainWindow):
         return {**app, **comments, **objects_, **clip, **markup, **shapes, **text, **page}
 
     # ---- helpers of the handlers -------------------------------------------------------------------------------
-    def _typed_text(self, tool: str, title: str, then):
-        """Ask for text with the size and color last used by this tool, remember them, then run then(r)."""
+    def _typed_text(self, a: dict, title: str, then):
+        """Text typed on the page (a["text"]), else asked for in a dialog, with the size and color last used by
+        this tool; remember them, then run then(r)."""
+        tool = a["tool"]
         size = prefs.get_float(f"text_size/{tool}", 10.0)
         color = self.tool_colors.get(tool) or comment_cmds.DEFAULT_COLORS.get(tool, (0, 0, 0))
-        r = dialogs.TextDialog.ask(self, tr(title), tr("Text:"), size=size, color=color)
+        if a.get("text"):
+            r = {"text": a["text"], "size": a.get("size") or size, "color": a.get("color") or color}
+        else:
+            r = dialogs.TextDialog.ask(self, tr(title), tr("Text:"), size=size, color=color)
         if not r:
             return None
         prefs.put(f"text_size/{tool}", r["size"])
@@ -1136,7 +1166,10 @@ class Main(QMainWindow):
     def do_find(self):
         v = self.cur()
         if v:
-            self.msg(tr("{n} matches", n=v.find(self.find_box.text())))
+            n = v.find(self.find_box.text())
+            if n == 0 and not any(v.doc[i].get_text("text").strip() for i in range(min(v.doc.page_count, 5))):
+                return self.msg(tr("This document has no text layer (a scan). Run Convert > OCR to search it."))
+            self.msg(tr("{n} matches", n=n))
 
     def _focus_comment(self, page0: int, xref: int):
         v = self.cur()
@@ -1351,11 +1384,11 @@ class Main(QMainWindow):
         elif kind in ("combo", "list"):
             opts = f["options"] or [""]
             cur = opts.index(f["value"]) if f["value"] in opts else 0
-            value, ok = QInputDialog.getItem(self, f["name"], f"{f['name']}:", opts, cur, kind == "combo")
+            value, ok = QInputDialog.getItem(self, f["label"], f"{f['label']}:", opts, cur, kind == "combo")
             if not ok:
                 return
         elif kind == "text":
-            value, ok = QInputDialog.getMultiLineText(self, f["name"], f"{f['name']}:", f["value"] or "")
+            value, ok = QInputDialog.getMultiLineText(self, f["label"], f"{f['label']}:", f["value"] or "")
             if not ok:
                 return
         elif kind == "signature":
@@ -1363,7 +1396,7 @@ class Main(QMainWindow):
                                       "field": f["name"]})
         else:
             return
-        self.apply(tr("Fill {field}", field=f["name"]), lambda d: run("Form.SetField", d, page, xref, value))
+        self.apply(tr("Fill {field}", field=f["label"]), lambda d: run("Form.SetField", d, page, xref, value))
 
     def add_field(self, kind: str, page: int, rect):
         k = {"text": "text", "check": "checkbox", "radio": "radio", "combo": "combo", "list": "list",

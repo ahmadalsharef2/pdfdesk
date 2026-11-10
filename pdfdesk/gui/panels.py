@@ -101,6 +101,15 @@ class Thumbnails(QListWidget):
         if order != sorted(order):
             QTimer.singleShot(0, lambda: self.reordered.emit(order))
 
+    def follow(self, page: int):
+        """Show the page the document view is on, unless the user is working in the panel."""
+        if self.hasFocus() or not 0 <= page < self.count() or self.currentRow() == page:
+            return
+        self.blockSignals(True)
+        self.setCurrentRow(page)
+        self.blockSignals(False)
+        self.scrollToItem(self.item(page))
+
     def selected_pages(self) -> list[int]:
         return sorted(it.data(ROLE) for it in self.selectedItems())
 

@@ -335,3 +335,73 @@ def test_new_document_can_be_edited(v1_path):
     assert not v.readonly and v.security is None and w.docs.tabText(w.docs.currentIndex()).startswith("new.pdf")
     w.apply("Delete", lambda d: d.delete_page(0))
     assert v.doc.page_count == 5 and v.modified
+
+
+def test_no_window_attribute_hides_a_method():
+    """`self.split = QSplitter()` once hid the Split command, so its button called the splitter and crashed."""
+    import inspect
+    _app()
+    w = Main()
+    methods = {n for n, f in inspect.getmembers(Main, inspect.isfunction)}
+    hidden = sorted(n for n in methods if n in vars(w))
+    assert hidden == []
+
+
+def test_tr_takes_a_value_named_text():
+    from pdfdesk.lang import tr
+    assert tr("Find “{text}”", text="abc") == "Find “abc”"
+
+
+def test_typewriter_is_typed_on_the_page_and_selected(v1_path):
+    app = _app()
+    w = Main()
+    v = w.open_path(v1_path)
+    w.show()
+    app.processEvents()
+    v.set_zoom(1.0)
+    w.set_tool("typewriter")
+    x, y = v._origin(0)
+    _mouse(v, "press", (x + 100, y + 400))
+    _mouse(v, "release", (x + 100, y + 400))
+    assert v._editor is not None                         # no dialog: an editor on the page
+    v._editor.setText("Typed here\nsecond line")
+    v._commit_editor()
+    p0 = v.doc[0]                                        # hold the page: its annotations die with it
+    a = next(p0.annots())
+    x0, xref = a.rect.x0, a.xref
+    assert a.info["content"] == "Typed here\nsecond line" and abs(x0 - 100) < 2
+    assert v.selected == (0, xref) and w.tool == "typewriter"
+    v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
+    v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.NoModifier))
+    p0 = v.doc[0]
+    assert abs(next(p0.annots()).rect.x0 - (x0 + 2)) < 0.1
+    labels = [lab for lab, _ in v.undo_stack]
+    assert labels.count("Nudge comment") == 1            # quick nudges are one undo step
+
+
+def test_form_fields_are_typed_into_and_tab_moves_on(tmp_path):
+    app = _app()
+    d = pymupdf.open()
+    page = d.new_page()
+    for n, y in enumerate((100, 140)):
+        wd = pymupdf.Widget()
+        wd.field_type, wd.field_name, wd.rect = pymupdf.PDF_WIDGET_TYPE_TEXT, f"f{n}", pymupdf.Rect(72, y, 300, y + 20)
+        page.add_widget(wd)
+    p = str(tmp_path / "form.pdf")
+    d.save(p)
+    w = Main()
+    v = w.open_path(p)
+    w.show()
+    app.processEvents()
+    v.set_zoom(1.0)
+    x, y = v._origin(0)
+    _mouse(v, "press", (x + 100, y + 110))
+    assert v._editor is not None
+    v._editor.setValue("first")
+    v._commit_editor(1)                                  # Tab
+    p0 = v.doc[0]
+    assert v._editor is not None and v._edit_target["xref"] != p0.first_widget.xref
+    v._editor.setValue("second")
+    v._commit_editor()
+    p0 = v.doc[0]
+    assert [wd.field_value for wd in p0.widgets()] == ["first", "second"]

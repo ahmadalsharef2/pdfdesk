@@ -10,7 +10,7 @@ _code = "en"
 _table: dict[str, str] = {}
 
 
-def tr(text: str, **values) -> str:
+def tr(text: str, /, **values) -> str:
     s = _table.get(text, text)
     return s.format(**values) if values else s
 
