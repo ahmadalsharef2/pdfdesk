@@ -179,10 +179,10 @@ Batch 4 and 5:
 - Undo history is capped at 768 MB besides 30 steps (a big scan kept 30 whole copies in memory).
 - Typewriter boxes with Arabic, Greek or CJK text were measured with Helvetica and came out too narrow.
 - Choosing a file that is not XML as an e-invoice says so instead of showing the XML parser's error.
+- Edit Text keeps a justified paragraph justified when it reflows (the last line stays ragged).
+- Typewriter comments show their text color in the Comments panel.
 
 ## Still open (found, not done)
 
-- Edit Text reflow sets justified paragraphs ragged-right.
-- Typewriter comments have no color swatch in the Comments panel (their color is the text color).
 - OCR and conversions run in the window's thread: progress and Cancel work, the rest of the window waits.
 - The ribbon shows a horizontal scrollbar when a tab is wider than the window (German, small screens).

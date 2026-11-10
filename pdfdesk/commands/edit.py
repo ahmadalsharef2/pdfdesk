@@ -336,15 +336,27 @@ def _reflow(doc, page, para: list[Line], new_text: str):
             rows[-1] += tail
         else:
             break
+    # a justified paragraph (its full lines end at the margin) stays justified, except its last line
+    justified = len(para) > 1 and all(abs(l.rect.x1 - right) < 3 for l in para[:-1])
     for i, row in enumerate(rows):
         text = " ".join(w for w, _ in row)
         if i < len(para) and text == " ".join(w for w, _ in para[i].words):
             continue                                            # unchanged line: leave its glyphs alone
         if i < len(para):
             _remove_text(page, para[i].rect)
-            origin = para[i].origin
+            origin = pymupdf.Point(para[i].origin)
         else:
             origin = pymupdf.Point(xs[-1], para[-1].origin.y + step * (i - len(para) + 1))
+        if justified and i < len(rows) - 1 and len(row) > 1:
+            widths = [width(w, st) for w, st in row]
+            gap = (right - origin.x - sum(widths)) / (len(row) - 1)
+            if 0 < gap < 3 * ln.size:
+                x = origin.x
+                for (w, st), wd in zip(row, widths):
+                    name, ffile, fbuf, _f = fonts[st]
+                    _write(page, (x, origin.y), w, name, ffile, fbuf, st[1], st[2])
+                    x += wd + gap
+                continue
         runs: list[list] = []                                   # consecutive words of one style
         for k, (w, st) in enumerate(row):
             t = (" " if k else "") + w

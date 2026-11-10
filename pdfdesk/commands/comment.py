@@ -309,7 +309,7 @@ def list_comments(doc):
                 continue
             out.append({"page": p.number + 1, "xref": a.xref, "type": a.type[1], "author": a.info.get("title", ""),
                         "content": a.info.get("content", ""), "rect": tuple(a.rect), "reply_to": parent,
-                        "kind": _kind(doc, a), "color": tuple(a.colors.get("stroke") or a.colors.get("fill") or ()),
+                        "kind": _kind(doc, a), "color": _color(doc, a),
                         "date": a.info.get("modDate") or a.info.get("creationDate") or "",
                         "marked": _marked_text(p, a)})
     for c in out:
@@ -340,6 +340,13 @@ def _kind(doc, a) -> str:
     if sub == "Highlight" and doc.xref_get_key(a.xref, AREA)[1] == "true":
         return "Area highlight"
     return KINDS.get(sub, sub)
+
+
+def _color(doc, a) -> tuple:
+    """The color a comment shows: its line or fill color; a typewriter's is its text color."""
+    if a.type[0] == pymupdf.PDF_ANNOT_FREE_TEXT and _kind(doc, a) == "Typewriter":
+        return tuple(_font_style(doc, a.xref)[1])
+    return tuple(a.colors.get("stroke") or a.colors.get("fill") or ())
 
 
 def _marked_text(page, a) -> str:
