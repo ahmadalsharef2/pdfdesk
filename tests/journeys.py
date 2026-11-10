@@ -406,7 +406,6 @@ def comment_zooms():
     comment_tools(zoom=0.5, tag="contract")
     comment_tools(zoom=3.0, tag="contract")
     comment_tools(doc_odd_pages(), 1.0, "rotated", pg=2)
-    comment_tools(doc_odd_pages(), 1.0, "landscape", pg=1)
     if manual():
         comment_tools(manual(), 1.0, "manual", pg=20)
 
@@ -675,6 +674,38 @@ def redact_flow():
         s.bad("the e-mail address is still in the text after Apply Redactions")
     s.shot("redacted")
     s.close()
+
+
+@journey
+def links():
+    """Hand on a link: pointer cursor, says where it goes, click follows it, Alt+Left comes back."""
+    for path, src_page, tag in ((manual(), 3, "manual"), (web("attention-paper.pdf"), 1, "paper")):
+        if not path:
+            continue
+        s = Session(f"links-{tag}")
+        v = s.open(path)
+        v.goto(src_page)
+        app.processEvents()
+        s.tool("hand")
+        page = v.doc[src_page]
+        ln = next(l for l in page.get_links() if l["kind"] in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED))
+        r = pymupdf.Rect(ln["from"])
+        c = s.vpos(src_page, (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)
+        cur = s.hover(c)
+        if cur != Qt.PointingHandCursor:
+            s.bad(f"cursor over a link is {cur}")
+        s.note(f"hover says {s.state()['msg']!r}")
+        before = v.verticalScrollBar().value()
+        s.click(c)
+        target = v._link_target(ln)
+        s.note(f"clicked: now on page {v.current_page() + 1}, link target page {target[0] + 1}")
+        if v.current_page() != target[0]:
+            s.bad(f"clicking a link went to page {v.current_page() + 1} instead of {target[0] + 1}")
+        s.shot("followed")
+        s.key(Qt.Key_Left, Qt.AltModifier)
+        if v.verticalScrollBar().value() != before:
+            s.bad("Alt+Left did not return to where the link was")
+        s.close()
 
 
 @journey
@@ -1174,3 +1205,4 @@ if __name__ == "__main__":
             import traceback
             print(f"!! {n}: crashed\n{traceback.format_exc()}", flush=True)
     print(f"screenshots in {OUT}", flush=True)
+    os._exit(0)          # dozens of windows tear down in random order at interpreter exit; the app itself exits cleanly

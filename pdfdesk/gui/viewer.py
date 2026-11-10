@@ -10,7 +10,7 @@ import time
 import uuid
 
 import pymupdf
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -95,6 +95,7 @@ class DocView(QAbstractScrollArea):
         self.obj_sel: tuple[int, int] | None = None           # (page index, object number) for Edit Object
         self._drag: dict | None = None                         # moving or resizing the selection
         self._objs: dict[int, list] = {}                       # page index -> page objects, until the next edit
+        self._hit_cache: dict[int, tuple] = {}                 # page index -> (fields, comments, links) for hovering
         self.text_sel: tuple[int, pymupdf.Point, pymupdf.Point] | None = None     # page index, start, stop
         self._words: dict[int, list] = {}                      # page index -> words, until the next edit
         self._cache: dict[tuple, QImage] = {}
@@ -108,6 +109,9 @@ class DocView(QAbstractScrollArea):
         self._editor: InlineTextEditor | InlineFieldEditor | None = None
         self._edit_target: dict | None = None                  # what the open editor changes; see _commit_editor
         self._last_checkpoint = 0.0
+        self._link_press = None                                # a link under the Hand when the button went down
+        self._hover_link = None
+        self._back: list[tuple[int, int]] = []                 # scroll positions before following links (Alt+Left)
         self.viewport().setStyleSheet("background:#6b6b6b")
         self.viewport().setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -176,6 +180,7 @@ class DocView(QAbstractScrollArea):
         self._cache.clear()
         self._objs.clear()
         self._words.clear()
+        self._hit_cache.clear()
         self.page_sizes = [(p.rect.width, p.rect.height) for p in self.doc]     # in points, as displayed (rotated)
         self._layout()
         if self.fit_mode and not self._fit():
@@ -595,6 +600,7 @@ class DocView(QAbstractScrollArea):
                     self._start_drag("move", pos)
                     return
             self.obj_sel = None
+            self._link_press = self._link_at(i, pt) if i is not None else None      # followed on release
             self._pan = (pos, self.horizontalScrollBar().value(), self.verticalScrollBar().value())
             self.viewport().setCursor(Qt.ClosedHandCursor)
             self.viewport().update()
@@ -668,27 +674,89 @@ class DocView(QAbstractScrollArea):
         i, pt = self.view_to_page(pos)
         if i is not None:
             if self.tool == "hand":
-                w = self._widget_at(i, pt)
-                if w is not None:
-                    return Qt.IBeamCursor if w.field_type in FILLABLE else Qt.PointingHandCursor
-                if annot_at(self.doc, i + 1, pt):
+                fields, comments, _links = self._hits(i)
+                f = next((f for f in fields if f[0].contains(pt)), None)
+                if f is not None:
+                    return Qt.IBeamCursor if f[2] in FILLABLE else Qt.PointingHandCursor
+                if any((r + (-3, -3, 3, 3)).contains(pt) for r, _x in comments):
                     return Qt.SizeAllCursor
+                link = self._link_at(i, pt)
+                key = (i, tuple(link["from"])) if link else None
+                if key != self._hover_link:                       # say where a link goes, once per link
+                    self._hover_link = key
+                    if link:
+                        self._hint(self._link_label(link))
+                if link:
+                    return Qt.PointingHandCursor
             if self._object_at(i, pt, added_only=self.tool == "hand") is not None:
                 return Qt.SizeAllCursor
         return CURSORS.get(self.tool, Qt.CrossCursor)
 
+    def _hits(self, i: int) -> tuple[list, list, list]:
+        """What the mouse can point at on a page, read once per edit: hovering runs on every mouse move, and a
+        tax form has hundreds of fields."""
+        if i not in self._hit_cache:
+            page = self.doc[i]
+            fields = [(pymupdf.Rect(w.rect), w.xref, w.field_type) for w in page.widgets()]
+            comments = [(pymupdf.Rect(a.rect), a.xref) for a in page.annots() or []
+                        if a.type[0] not in (pymupdf.PDF_ANNOT_WIDGET, pymupdf.PDF_ANNOT_POPUP) and not a.flags & 2]
+            self._hit_cache[i] = (fields, comments, page.get_links())
+        return self._hit_cache[i]
+
+    def _link_at(self, i: int, pt):
+        return next((ln for ln in self._hits(i)[2] if pymupdf.Rect(ln["from"]).contains(pt)), None)
+
+    def _link_target(self, link) -> tuple[int, float | None] | None:
+        """(page index, y of the target in page coordinates or None) of a link inside the document."""
+        if link["kind"] not in (pymupdf.LINK_GOTO, pymupdf.LINK_NAMED):
+            return None
+        page = link.get("page", -1)
+        if page is None or not 0 <= page < self.doc.page_count:
+            return None
+        to = link.get("to")
+        if to is None:
+            return page, None
+        pt = pymupdf.Point(to)
+        if link["kind"] == pymupdf.LINK_NAMED:          # PyMuPDF gives a named destination in PDF space (y up)
+            p = self.doc[page]
+            pt = pt * p.transformation_matrix
+        return page, pt.y
+
+    def _link_label(self, link) -> str:
+        target = self._link_target(link)
+        if target:
+            return tr("Link: go to page {n}", n=target[0] + 1)
+        if link.get("uri"):
+            return tr("Link: {uri}", uri=link["uri"])
+        return tr("Link")
+
+    def follow_link(self, link):
+        """Go to a link's target in this document (Alt+Left comes back), or ask the window to open a web link."""
+        target = self._link_target(link)
+        if target:
+            self._back.append((self.verticalScrollBar().value(), self.horizontalScrollBar().value()))
+            page, y = target
+            top = self.tops[page] + (y * self.zoom if y is not None and y > 0 else 0) - self.GAP
+            self.verticalScrollBar().setValue(int(top))
+            self._hint(tr("Page {n} — Alt+Left goes back", n=page + 1))
+        elif link.get("uri"):
+            self._emit(tool="open-url", url=link["uri"])
+
+    def go_back(self):
+        if self._back:
+            v, h = self._back.pop()
+            self.verticalScrollBar().setValue(v)
+            self.horizontalScrollBar().setValue(h)
+
     def _widget_at(self, i: int, pt):
-        page = self.doc[i]
-        w = next((w for w in page.widgets() if w.rect.contains(pt)), None)
-        if w is not None:
-            w.keep_page = page              # PyMuPDF unbinds a widget once its page object is collected
-        return w
+        f = next((f for f in self._hits(i)[0] if f[0].contains(pt)), None)
+        return self._widget(i, f[1]) if f else None
 
     def _widget(self, i: int, xref: int):
         page = self.doc[i]
         w = next((w for w in page.widgets() if w.xref == xref), None)
         if w is not None:
-            w.keep_page = page
+            w.keep_page = page              # PyMuPDF unbinds a widget once its page object is collected
         return w
 
     def _page_words(self, i: int) -> list:
@@ -707,8 +775,12 @@ class DocView(QAbstractScrollArea):
             self._finish_drag(pos)
             return
         if self._pan:
+            start = self._pan[0]
             self._pan = None
-            self.viewport().setCursor(CURSORS.get(self.tool, Qt.CrossCursor))
+            self.viewport().setCursor(self._hover_cursor(pos))
+            link, self._link_press = self._link_press, None
+            if link and abs(pos.x() - start.x()) + abs(pos.y() - start.y()) <= 4:     # a click, not a pan
+                self.follow_link(link)
             return
         if not self._press:
             return
@@ -826,10 +898,29 @@ class DocView(QAbstractScrollArea):
             return
         super().keyPressEvent(e)
 
+    def event(self, e):
+        """Tab in a form: go to the first field on or after the current page (Shift+Tab: the last before it).
+        Only a real key press: Qt also moves focus when a focused editor is hidden."""
+        if e.type() == QEvent.Type.KeyPress and e.key() in (Qt.Key_Tab, Qt.Key_Backtab) and self._editor is None \
+                and self.tool == "hand" and not self.readonly:
+            fields = self._fields()
+            if fields:
+                here = self.current_page()
+                if e.key() == Qt.Key_Tab:
+                    i, xref = next((f for f in fields if f[0] >= here), fields[0])
+                else:
+                    i, xref = next((f for f in reversed(fields) if f[0] <= here), fields[-1])
+                self._next_field({"page": i, "xref": xref}, 0)
+                return True
+        return super().event(e)
+
     def _navigate(self, e) -> bool:
-        """Home / End and Ctrl+Home / Ctrl+End go to the first and last page; Space and Shift+Space page."""
+        """Home / End and Ctrl+Home / Ctrl+End go to the first and last page; Space and Shift+Space page;
+        Alt+Left returns from a followed link."""
         k, bar = e.key(), self.verticalScrollBar()
-        if k == Qt.Key_Home:
+        if k == Qt.Key_Left and e.modifiers() & Qt.AltModifier:
+            self.go_back()
+        elif k == Qt.Key_Home:
             bar.setValue(0)
         elif k == Qt.Key_End:
             bar.setValue(bar.maximum())
@@ -1229,11 +1320,11 @@ class DocView(QAbstractScrollArea):
     def _close_editor(self):
         if self._editor is not None:
             ed, self._editor = self._editor, None
-            ed.hide()
-            ed.deleteLater()
             self._edit_target = None
             self._hover_line = None
-            self.setFocus()
+            self.setFocus()                     # before hiding it, so Qt does not pass the focus elsewhere
+            ed.hide()
+            ed.deleteLater()
             self.viewport().update()
 
     # ---- search ----------------------------------------------------------------------------------------------

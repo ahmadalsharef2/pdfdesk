@@ -92,7 +92,6 @@ STRINGS = {
     'To HTML': 'In HTML',
     'To PDF/A': 'In PDF/A',
     'Replace': 'Ersetzen',
-    'Link': 'Link',
     'Create from URLs': 'Aus URLs erstellen',
     'Remove All Links': 'Alle Links entfernen',
     'Properties': 'Eigenschaften',
@@ -885,4 +884,10 @@ STRINGS = {
     'Cancelled: {what}': 'Abgebrochen: {what}',
     '{what}: page {n} of {total}': '{what}: Seite {n} von {total}',
     'Cancel': 'Abbrechen',
+    'Link: go to page {n}': 'Link: zu Seite {n}',
+    'Link: {uri}': 'Link: {uri}',
+    'Link': 'Link',
+    'Page {n} — Alt+Left goes back': 'Seite {n} — Alt+Links springt zurück',
+    'Open link': 'Link öffnen',
+    'Open this address in the browser?\n\n{url}': 'Diese Adresse im Browser öffnen?\n\n{url}',
 }

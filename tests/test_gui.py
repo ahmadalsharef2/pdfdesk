@@ -405,3 +405,28 @@ def test_form_fields_are_typed_into_and_tab_moves_on(tmp_path):
     v._commit_editor()
     p0 = v.doc[0]
     assert [wd.field_value for wd in p0.widgets()] == ["first", "second"]
+
+
+def test_hand_follows_a_link_and_alt_left_comes_back(tmp_path):
+    app = _app()
+    d = pymupdf.open()
+    for n in range(6):
+        d.new_page().insert_text((72, 400), f"Target {n}", fontsize=14)
+    p0 = d[0]
+    p0.insert_link({"kind": pymupdf.LINK_GOTO, "from": pymupdf.Rect(72, 100, 200, 120), "page": 2,
+                    "to": pymupdf.Point(72, 380)})
+    path = str(tmp_path / "links.pdf")
+    d.save(path)
+    w = Main()
+    v = w.open_path(path)
+    w.show()
+    app.processEvents()
+    v.set_zoom(1.0)
+    w.set_tool("hand")
+    c = v.page_point_to_view(0, pymupdf.Point(100, 110))
+    _mouse(v, "press", (c.x(), c.y()))
+    _mouse(v, "release", (c.x(), c.y()))
+    top_page, top = v.view_to_page(QPointF(c.x(), 1))
+    assert top_page == 2 and abs(top.y - 380) < 20             # the target point is at the top of the view
+    v.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.AltModifier))
+    assert v.current_page() == 0

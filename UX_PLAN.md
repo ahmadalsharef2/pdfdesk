@@ -163,3 +163,9 @@ Batch 2:
 - Note, Text box (drag or click) and Callout are typed on the page like Typewriter.
 - Area highlights are plain rectangles (MuPDF drew them with round ends), also after recoloring or moving.
 - OCR shows page-by-page progress with Cancel (undoes it); long jobs show a wait cursor.
+
+Batch 3:
+- Links: the Hand tool follows them (pointer cursor, the status bar says where they go), Alt+Left goes back;
+  web links ask before opening the browser. PyMuPDF gives named destinations in PDF space (y up); handled.
+- Hovering on a tax form cost 23 ms per mouse move (fields read on every move); now 0.45 ms (cached per edit).
+- Tab in the page of a form document opens its first field.

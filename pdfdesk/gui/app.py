@@ -10,8 +10,8 @@ import sys
 import tempfile
 
 import pymupdf
-from PySide6.QtCore import QByteArray, QLocale, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QByteArray, QLocale, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -732,7 +732,8 @@ class Main(QMainWindow):
 
     # ---- tool actions: one handler per feature -------------------------------------------------------------
     # actions that change nothing in the document, so a read-only document allows them
-    VIEW_ACTIONS = {"set-tool", "page-command", "find", "app", "tool-color", "object-export", "copy", "hint"}
+    VIEW_ACTIONS = {"set-tool", "page-command", "find", "app", "tool-color", "object-export", "copy", "hint",
+                    "open-url"}
     # actions that make one new comment, which is selected afterwards (so Delete, the arrow keys or a right-click
     # act on it at once, as in Foxit)
     COMMENT_ACTIONS = {"highlight", "underline", "strikeout", "squiggly", "highlight-note", "replace-text",
@@ -797,6 +798,7 @@ class Main(QMainWindow):
                                  "print": self.print_doc, "properties": self.properties}[a["name"]](),
             "tool-color": lambda a, p: self._remember_tool_color(a["name"], a["color"]),
             "hint": lambda a, p: self.msg(a["text"]),
+            "open-url": lambda a, p: self._open_url(a["url"]),
         }
         comments = {
             "delete-annot": lambda a, p: cmd("Delete comment", "Comment.Delete", p, a["xref"]),
@@ -894,6 +896,12 @@ class Main(QMainWindow):
         return {**app, **comments, **objects_, **clip, **markup, **shapes, **text, **page}
 
     # ---- helpers of the handlers -------------------------------------------------------------------------------
+    def _open_url(self, url: str):
+        """A web link in the document: ask first, as Foxit does, since a document can point anywhere."""
+        if QMessageBox.question(self, tr("Open link"), tr("Open this address in the browser?\n\n{url}", url=url)) \
+                == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(url))
+
     def _typed_text(self, a: dict, title: str, then):
         """Text typed on the page (a["text"]), else asked for in a dialog, with the size and color last used by
         this tool; remember them, then run then(r)."""
