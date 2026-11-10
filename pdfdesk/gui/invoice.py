@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 from ..commands import invoice as inv_cmds
 from ..lang import tr
 from . import theme
-from .dialogs import ColorButton
+from .dialogs import ColorButton, size_for_screen
 
 UNIT_CHOICES = [("C62", "piece"), ("HUR", "hour"), ("DAY", "day"), ("MON", "month"), ("LS", "lump sum"),
                 ("KGM", "kg"), ("MTR", "metre"), ("MTK", "m²"), ("LTR", "litre")]
@@ -63,7 +63,7 @@ class InvoiceDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
         self.setWindowTitle(tr("Create E-Invoice"))
-        self.resize(760, 620)
+        size_for_screen(self, 760, 620)
         st = _settings()
         self.saved = json.loads(st.value("invoice/seller", "{}") or "{}")
         prefs = json.loads(st.value("invoice/prefs", "{}") or "{}")
@@ -405,7 +405,7 @@ class InvoiceViewDialog(QDialog):
     def __init__(self, parent, inv: dict, checks, xml: bytes | None, lang: str = "de"):
         super().__init__(parent)
         self.setWindowTitle(tr("E-Invoice") + f" — {inv['standard']}")
-        self.resize(820, 760)
+        size_for_screen(self, 820, 760)
         self.xml = xml
         v = QVBoxLayout(self)
         info = QLabel(f"<b>{html.escape(inv['standard'])}</b> · {inv['syntax']} " + tr("syntax")

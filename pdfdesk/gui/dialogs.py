@@ -11,6 +11,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
+    QGuiApplication,
     QIcon,
     QPainter,
     QPainterPath,
@@ -44,6 +45,16 @@ from PySide6.QtWidgets import (
 
 from ..core import fonts
 from ..lang import tr
+
+
+def size_for_screen(w: QWidget, width: int, height: int):
+    """Give a window its preferred size, but never more than fits the screen it will open on (a 1366x768 laptop
+    must still show the bottom of a 900-pixel-tall window)."""
+    screen = (w.parentWidget().screen() if w.parentWidget() else None) or QGuiApplication.primaryScreen()
+    if screen is None:
+        return w.resize(width, height)
+    avail = screen.availableGeometry()
+    w.resize(min(width, int(avail.width() * 0.92)), min(height, int(avail.height() * 0.92)))
 
 DATA = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "pdfdesk"
 IDS = DATA / "ids"
@@ -774,7 +785,7 @@ class FolderSearchDialog(QDialog):
         from PySide6.QtWidgets import QListWidget, QListWidgetItem
         self._item = QListWidgetItem
         self.setWindowTitle(tr("Advanced Search"))
-        self.resize(720, 480)
+        size_for_screen(self, 720, 480)
         self.open_hit = open_hit
         lay = QVBoxLayout(self)
         f = QFormLayout()
@@ -881,7 +892,7 @@ class AutoRedactDialog(QDialog):
         self.items: list[dict] = []
         self.apply_now = False
         self.setWindowTitle(tr("Auto Redact"))
-        self.resize(760, 560)
+        size_for_screen(self, 760, 560)
         v = QVBoxLayout(self)
         box = QGroupBox(tr("Look for"))
         g = QGridLayout(box)
@@ -983,7 +994,7 @@ class CombineDialog(QDialog):
         super().__init__(parent)
         from PySide6.QtWidgets import QAbstractItemView, QListWidget
         self.setWindowTitle(tr("Combine Files"))
-        self.resize(620, 420)
+        size_for_screen(self, 620, 420)
         v = QVBoxLayout(self)
         v.addWidget(QLabel(tr("The files are combined in this order. Drag them to change it.")))
         row = QHBoxLayout()

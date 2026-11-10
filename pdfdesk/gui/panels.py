@@ -87,9 +87,11 @@ class Thumbnails(QListWidget):
             if i >= self._doc.page_count:
                 continue
             p = self._doc[i]
-            z = self.THUMB_W / max(p.rect.width, p.rect.height) * 1.0
+            dpr = self.devicePixelRatioF()
+            z = self.THUMB_W / max(p.rect.width, p.rect.height) * dpr
             pm = p.get_pixmap(matrix=pymupdf.Matrix(z, z), alpha=False)
             img = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format_RGB888).copy()
+            img.setDevicePixelRatio(dpr)
             it = self.item(i)
             if it is not None:
                 it.setIcon(QIcon(QPixmap.fromImage(img)))

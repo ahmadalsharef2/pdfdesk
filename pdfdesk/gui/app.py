@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 import pymupdf
-from PySide6.QtCore import QLocale, QSize, Qt, QTimer
+from PySide6.QtCore import QByteArray, QLocale, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -106,7 +107,7 @@ class Main(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("pdfdesk")
-        self.resize(1360, 900)
+        dialogs.size_for_screen(self, 1360, 900)
         self.author = getpass.getuser()
         self.tool = "hand"
         self.stamp_name = "Approved"
@@ -205,6 +206,21 @@ class Main(QMainWindow):
         self.ribbon.set_current("Home")
         self.docs.currentChanged.connect(self._tab_changed)
         self._status()
+        self._restore_window()
+
+    def _restore_window(self):
+        """Last size, position and maximized state. Qt moves a geometry that is off every current screen back
+        onto one, so a remembered second monitor that is gone does not hide the window."""
+        geo, sizes = prefs.get("window/geometry"), prefs.get_json("window/split", None)
+        if isinstance(geo, QByteArray) and not geo.isEmpty():
+            self.restoreGeometry(geo)
+        if sizes and len(sizes) == 2 and all(isinstance(n, int) and n > 0 for n in sizes):
+            self.split.setSizes(sizes)
+
+    def _remember_window(self):
+        prefs.put("window/geometry", self.saveGeometry())
+        if self.nav.isVisible():
+            prefs.put_json("window/split", self.split.sizes())
 
     # ---- plumbing ------------------------------------------------------------------------------------
     def cur(self) -> DocView | None:
@@ -241,6 +257,8 @@ class Main(QMainWindow):
         h.setContentsMargins(8, 2, 8, 2)
         self.msg_label = QLabel("")
         self.msg_label.setStyleSheet("color:#555")
+        # a long hint must not widen the window's minimum size (a QLabel asks for its whole text)
+        self.msg_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         h.addWidget(self.msg_label, 1)
         T = Ribbon.tiny
         h.addWidget(T("first", tr("First page"), lambda: self.cur() and self.cur().goto(0)))
@@ -370,7 +388,9 @@ class Main(QMainWindow):
         self.page_spin.blockSignals(False)
 
     def msg(self, text: str):
-        self.msg_label.setText(text)
+        fm = self.msg_label.fontMetrics()
+        self.msg_label.setText(fm.elidedText(text, Qt.ElideRight, max(50, self.msg_label.width() - 4)))
+        self.msg_label.setToolTip(text if fm.horizontalAdvance(text) > self.msg_label.width() else "")
 
     def error(self, title: str, e: Exception | str):
         QMessageBox.warning(self, title, str(e))
@@ -1037,6 +1057,7 @@ class Main(QMainWindow):
                 self.restart_cmd = None
                 e.ignore()
                 return
+        self._remember_window()
         e.accept()
 
     def save(self) -> bool:
@@ -1238,8 +1259,8 @@ class Main(QMainWindow):
     BATCH_MS = 1200          # Explorer starts one process per selected file; wait for the rest of them
 
     def receive(self, action: str, paths: list[str]):
-        if self.isMinimized():
-            self.showNormal()
+        if self.isMinimized():                  # bring it back as it was: showNormal would un-maximize it
+            self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
         self.raise_()
         self.activateWindow()
         paths = [p for p in paths if os.path.isfile(p)]

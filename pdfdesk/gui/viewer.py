@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 import pymupdf
-from PySide6.QtCore import QPointF, QRectF, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -69,6 +69,8 @@ class DocView(QAbstractScrollArea):
         super().__init__()
         self.doc, self.path, self.password = doc, path, password
         self.zoom = 1.0
+        self.fit_mode: str | None = None                       # "width" | "page": kept through resizes
+        self.page_sizes: list[tuple[float, float]] = []
         self.modified = False
         self.tool = "hand"
         self.tool_colors: dict[str, tuple] = {}               # the window's color choices, shared by all views
@@ -146,19 +148,27 @@ class DocView(QAbstractScrollArea):
 
     # ---- layout ------------------------------------------------------------------------------------
     def relayout(self):
+        """The document changed: forget everything derived from its pages and lay them out again."""
         self._cache.clear()
         self._objs.clear()
         self._words.clear()
-        self.sizes = [(p.rect.width * self.zoom, p.rect.height * self.zoom) for p in self.doc]
+        self.page_sizes = [(p.rect.width, p.rect.height) for p in self.doc]     # in points, as displayed (rotated)
+        self._layout()
+        if self.fit_mode and not self._fit():
+            return                                   # _fit laid out again at the fitted zoom
+        self.verticalScrollBar().setSingleStep(40)
+        self._update_bars()
+        self._announce()
+        self.viewport().update()
+
+    def _layout(self):
+        """Page positions at the current zoom; page_sizes must be current."""
+        self.sizes = [(w * self.zoom, h * self.zoom) for w, h in self.page_sizes]
         self.tops, y = [], self.GAP
         for _, h in self.sizes:
             self.tops.append(y)
             y += h + self.GAP
         self.total = y
-        self.verticalScrollBar().setSingleStep(40)
-        self._update_bars()
-        self._announce()
-        self.viewport().update()
 
     def _update_bars(self):
         vp = self.viewport()
@@ -169,25 +179,83 @@ class DocView(QAbstractScrollArea):
         self.horizontalScrollBar().setPageStep(vp.width())
 
     def resizeEvent(self, e):
-        self._update_bars()
+        """The view got another size (window resized or maximized, panel shown, scrollbar appeared): keep a
+        fitted zoom fitted, and keep the open text editor over its line (pages are centred, so they move)."""
+        super().resizeEvent(e)
+        if not (self.fit_mode and self._fit()):
+            self._update_bars()
+        if self._editor is not None:
+            i, ln = self._edit_target
+            self._editor.place(self.page_rect_to_view(i, ln.rect))
 
-    def set_zoom(self, z: float):
+    def set_zoom(self, z: float, anchor=None, fit: str | None = None):
+        """Zoom so that the document point under `anchor` (a viewport position; default: the centre, or the top
+        when the view is at the top) stays where it is. An explicit zoom ends Fit Width / Fit Page."""
         z = max(0.1, min(z, 8.0))
-        page = self.current_page()
+        self.fit_mode = fit
+        if abs(z - self.zoom) < 1e-9:
+            return False
+        vp = self.viewport()
+        if anchor is None:
+            at_top = self.verticalScrollBar().value() == 0
+            anchor = QPointF(vp.width() / 2, 0 if at_top else vp.height() / 2)
+        # where the anchor is in the document, in page units, before the zoom changes
+        vy = self.verticalScrollBar().value() + anchor.y()
+        i = max((k for k, t in enumerate(self.tops) if t <= vy), default=0)
+        dy = vy - self.tops[i] if self.tops else 0.0
+        in_page = self.sizes[i][1] >= dy >= 0 if self.sizes else False
+        ox, _ = self._origin(i) if self.sizes else (0, 0)
+        px = (anchor.x() - ox) / self.zoom
+        old = self.zoom
         self.zoom = z
-        self.relayout()
-        self.goto(page)
+        self._layout()
+        self._update_bars()
+        if self.tops:
+            top = self.tops[i] + (dy * z / old if in_page else dy)         # a gap between pages is not scaled
+            self.verticalScrollBar().setValue(int(round(top - anchor.y())))
+            w = self.sizes[i][0]
+            left = max(self.GAP, (vp.width() - w) / 2) + px * z           # page origin with no horizontal scroll
+            self.horizontalScrollBar().setValue(int(round(left - anchor.x())))
+        self._cache.clear()
+        self._announce()
+        self.viewport().update()
+        return True
+
+    def _fit(self) -> bool:
+        """Re-apply the current fit mode. True when the zoom changed (and the view is laid out again)."""
+        z = self.fit_zoom(self.fit_mode)
+        return z is not None and self.set_zoom(z, fit=self.fit_mode)
+
+    def fit_zoom(self, mode: str) -> float | None:
+        """The zoom Fit Width or Fit Page needs. Measured on the viewport without scrollbars, then with the
+        vertical one when the pages will need it: the zoom must not depend on which bars happen to show."""
+        if not self.doc.page_count or not self.page_sizes:
+            return None
+        full = self.maximumViewportSize()
+        bar = self.verticalScrollBar().sizeHint().width() if self.verticalScrollBarPolicy() != Qt.ScrollBarAlwaysOff else 0
+        if self.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn:
+            full = QSize(full.width() - bar, full.height())
+            bar = 0
+
+        def zoom_for(width: float) -> float:
+            if mode == "page":
+                w, h = self.page_sizes[min(self.current_page(), len(self.page_sizes) - 1)]
+                return min((width - 2 * self.GAP) / w, (full.height() - 2 * self.GAP) / h)
+            widest = max(w for w, _ in self.page_sizes)
+            return (width - 2 * self.GAP - 4) / widest
+
+        z = zoom_for(full.width())
+        if bar and sum(h * z + self.GAP for _, h in self.page_sizes) + self.GAP > full.height():
+            z = zoom_for(full.width() - bar)
+        return max(0.1, min(z, 8.0))
 
     def fit_width(self):
-        if self.doc.page_count:
-            widest = max(w for w, _ in self.sizes) / self.zoom
-            self.set_zoom((self.viewport().width() - 2 * self.GAP - 4) / widest)
+        self.fit_mode = "width"
+        self._fit()
 
     def fit_page(self):
-        if self.doc.page_count:
-            r = self.doc[self.current_page()].rect
-            self.set_zoom(min((self.viewport().width() - 2 * self.GAP) / r.width,
-                              (self.viewport().height() - 2 * self.GAP) / r.height))
+        self.fit_mode = "page"
+        self._fit()
 
     def goto(self, page: int):
         if self.tops:
@@ -231,11 +299,14 @@ class DocView(QAbstractScrollArea):
 
     # ---- painting -------------------------------------------------------------------------------------------
     def _render(self, i: int) -> QImage:
-        key = (i, self.zoom, self.doc[i].rotation, id(self.doc))
+        dpr = self.viewport().devicePixelRatioF()              # render at the screen's real resolution
+        key = (i, self.zoom, dpr, self.doc[i].rotation, id(self.doc))
         img = self._cache.get(key)
         if img is None:
-            pm = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(self.zoom, self.zoom), alpha=False)
+            k = self.zoom * dpr
+            pm = self.doc[i].get_pixmap(matrix=pymupdf.Matrix(k, k), alpha=False)
             img = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format_RGB888).copy()
+            img.setDevicePixelRatio(dpr)
             # bound by bytes, not count: at high zoom a single page is tens of MB
             while self._cache and sum(c.sizeInBytes() for c in self._cache.values()) + img.sizeInBytes() > self.CACHE_BYTES:
                 self._cache.pop(next(iter(self._cache)))
@@ -325,8 +396,8 @@ class DocView(QAbstractScrollArea):
         self.viewport().update()
 
     def wheelEvent(self, e):
-        if e.modifiers() & Qt.ControlModifier:
-            self.set_zoom(self.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1))
+        if e.modifiers() & Qt.ControlModifier:                  # zoom about the mouse
+            self.set_zoom(self.zoom * (1.1 if e.angleDelta().y() > 0 else 1 / 1.1), anchor=e.position())
         else:
             super().wheelEvent(e)
 
@@ -491,7 +562,7 @@ class DocView(QAbstractScrollArea):
         if i is None:
             return
         if self.tool == "zoom":
-            self.set_zoom(self.zoom / 1.25 if e.modifiers() & Qt.ShiftModifier else self.zoom * 1.25)
+            self.set_zoom(self.zoom / 1.25 if e.modifiers() & Qt.ShiftModifier else self.zoom * 1.25, anchor=pos)
             return
         if self.tool == "edit-text":
             self._commit_editor()           # clicking elsewhere keeps the edit, like Foxit

@@ -41,6 +41,13 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q            # tests
 - OCRmyPDF is used only for PDF/A; `convert._ocrmypdf_without_tesseract` skips its check for the tesseract program.
 - PyMuPDF and Ghostscript are AGPL-3.0: fine for personal use, distribution needs the AGPL.
 
+- Window and page sizes: `DocView.fit_mode` keeps Fit Width / Fit Page through resizes and maximizing
+  (`resizeEvent` re-fits; `fit_zoom` measures the viewport without scrollbars, so the zoom does not depend on
+  which bars happen to show). `set_zoom` keeps the point under the mouse (or the view centre) in place. Pages
+  render at the screen's device pixel ratio. Windows size through `dialogs.size_for_screen` (never larger than
+  the screen); the main window remembers its geometry in the settings (`window/geometry`). The status label has
+  an Ignored width policy: a QLabel's minimum size is its whole text, which once forced a 1800 px wide window.
+
 - Selection is one model in `gui/viewer.py`: a comment (`selected`) or a page object (`obj_sel`). The Hand tool
   also picks up what pdfdesk added (text, images, signatures, pastes), never the page's own art: add commands
   run inside `objects.adding()`, which wraps new content in `/PdfDesk BMC … EMC`; `Object.List` reports it as

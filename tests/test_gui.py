@@ -275,3 +275,52 @@ def test_file_manager_combine_and_convert(tmp_path, monkeypatch):
     w.receive("convert", [png])
     w._run_batch()
     assert w.docs.tabText(w.docs.currentIndex()).startswith("scan.pdf") and w.cur().doc.page_count == 1
+
+
+def test_fit_follows_the_window_size(v1_path):
+    """Fit Width / Fit Page stay fitted when the window changes size; an explicit zoom ends them."""
+    app = _app()
+    w = Main()
+    w.resize(1000, 700)
+    w.show()
+    v = w.open_path(v1_path)
+    app.processEvents()
+    assert v.fit_mode == "width"
+    assert v.horizontalScrollBar().maximum() == 0                  # the page is never wider than the view
+    z1 = v.zoom
+    w.resize(1500, 900)
+    app.processEvents()
+    assert v.fit_mode == "width" and v.zoom > z1 * 1.3
+    assert abs(v.zoom - v.fit_zoom("width")) < 1e-9
+    assert v.horizontalScrollBar().maximum() == 0 and v.verticalScrollBar().value() == 0
+    v.fit_page()
+    app.processEvents()
+    assert v.fit_mode == "page" and v.sizes[0][1] <= v.viewport().height() - 2 * v.GAP
+    w.resize(1000, 700)
+    app.processEvents()
+    assert v.fit_mode == "page" and v.sizes[0][1] <= v.viewport().height() - 2 * v.GAP
+    v.set_zoom(1.0)
+    assert v.fit_mode is None and v.zoom == 1.0
+    w.resize(1500, 900)
+    app.processEvents()
+    assert v.zoom == 1.0
+
+
+def test_zoom_keeps_the_point_under_the_mouse(v1_path):
+    app = _app()
+    w = Main()
+    w.resize(1000, 700)
+    w.show()
+    v = w.open_path(v1_path)
+    app.processEvents()
+    v.set_zoom(1.0)
+    v.goto(2)
+    v.verticalScrollBar().setValue(v.verticalScrollBar().value() + 150)
+    anchor = QPointF(v.viewport().width() / 2, 200)              # mid-page: the view can scroll to keep it
+    before = v.view_to_page(anchor)
+    v.set_zoom(2.0, anchor=anchor)
+    after = v.view_to_page(anchor)
+    assert before[0] == after[0] and abs(before[1].x - after[1].x) < 1.5 and abs(before[1].y - after[1].y) < 1.5
+    v.verticalScrollBar().setValue(0)                              # at the top of the document: stays there
+    v.set_zoom(3.0)
+    assert v.verticalScrollBar().value() == 0
