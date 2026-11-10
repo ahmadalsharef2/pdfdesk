@@ -68,6 +68,9 @@ class DocView(QAbstractScrollArea):
     def __init__(self, doc: pymupdf.Document, path: str | None = None, password: str | None = None):
         super().__init__()
         self.doc, self.path, self.password = doc, path, password
+        self.new_name: str | None = None                       # a new document's name until it is saved
+        self.security = None                                   # core.security state, kept across saves
+        self.readonly = False                                  # opened with the user password only
         self.zoom = 1.0
         self.fit_mode: str | None = None                       # "width" | "page": kept through resizes
         self.page_sizes: list[tuple[float, float]] = []

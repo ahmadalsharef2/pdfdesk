@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QSettings, Qt, Signal
+from PySide6.QtCore import QPointF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from ..core import fonts
 from ..lang import tr
+from . import prefs
 
 
 def size_for_screen(w: QWidget, width: int, height: int):
@@ -523,7 +524,7 @@ class DigitalSignDialog(QDialog):
         self.ids.clear()
         for p in sorted(glob.glob(str(IDS / "*.pfx")) + glob.glob(str(IDS / "*.p12"))):
             self.ids.addItem(os.path.basename(p), p)
-        last = QSettings("pdfdesk", "pdfdesk").value("last_id")
+        last = prefs.get("last_id")
         for want in (select, last):
             if want:
                 i = self.ids.findData(want)
@@ -564,7 +565,7 @@ class DigitalSignDialog(QDialog):
             if not ok:
                 QMessageBox.warning(d, tr("Sign"), tr("Could not open the digital ID. Check the password."))
                 continue
-            QSettings("pdfdesk", "pdfdesk").setValue("last_id", v["pfx"])
+            prefs.put("last_id", v["pfx"])
             return v
         return None
 

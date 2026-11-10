@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import html
-import json
 import re
 
-from PySide6.QtCore import QDate, QSettings, Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -34,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..commands import invoice as inv_cmds
 from ..lang import tr
-from . import theme
+from . import prefs, theme
 from .dialogs import ColorButton, size_for_screen
 
 UNIT_CHOICES = [("C62", "piece"), ("HUR", "hour"), ("DAY", "day"), ("MON", "month"), ("LS", "lump sum"),
@@ -44,10 +43,6 @@ OUTPUTS = [("pdf", "ZUGFeRD PDF (PDF/A-3 with the XML inside)"), ("both", "ZUGFe
            ("xml", "XML only (XRechnung)")]
 SELLER_KEYS = ("name", "street", "zip", "city", "country", "vat_id", "tax_number", "contact", "phone", "email",
                "electronic_address", "iban", "bic", "account_name")
-
-
-def _settings():
-    return QSettings("pdfdesk", "pdfdesk")
 
 
 def _next_number(last: str) -> str:
@@ -64,9 +59,8 @@ class InvoiceDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(tr("Create E-Invoice"))
         size_for_screen(self, 760, 620)
-        st = _settings()
-        self.saved = json.loads(st.value("invoice/seller", "{}") or "{}")
-        prefs = json.loads(st.value("invoice/prefs", "{}") or "{}")
+        self.saved = prefs.get_json("invoice/seller", {})
+        saved_prefs = prefs.get_json("invoice/prefs", {})
         v = QVBoxLayout(self)
         self.tabs = QTabWidget()
         v.addWidget(self.tabs)
@@ -77,11 +71,11 @@ class InvoiceDialog(QDialog):
         self.type = QComboBox()
         for code, label in TYPES:
             self.type.addItem(tr(label), code)
-        self.number = QLineEdit(_next_number(st.value("invoice/last_number", "")))
+        self.number = QLineEdit(_next_number(saved_prefs.get("invoice/last_number", "")))
         self.preceding = QLineEdit(placeholderText=tr("Number of the invoice this one corrects or credits"))
         self.issue = QDateEdit(QDate.currentDate(), calendarPopup=True)
         self.delivery = QDateEdit(QDate.currentDate(), calendarPopup=True)
-        self.due_days = QSpinBox(minimum=0, maximum=365, value=int(prefs.get("due_days", 14)), suffix=tr(" days"))
+        self.due_days = QSpinBox(minimum=0, maximum=365, value=int(saved_prefs.get("due_days", 14)), suffix=tr(" days"))
         self.currency = QComboBox(editable=True)
         self.currency.addItems([tr(s) for s in ("EUR", "CHF", "USD", "GBP")])
         self.public = QCheckBox(tr("Customer is a public authority (XRechnung)"))
@@ -120,7 +114,7 @@ class InvoiceDialog(QDialog):
         self.vat = QComboBox()
         for key, (label, *_rest) in inv_cmds.VAT_TREATMENTS.items():
             self.vat.addItem(tr(label), key)
-        self.vat.setCurrentIndex(max(0, self.vat.findData(prefs.get("vat", "standard"))))
+        self.vat.setCurrentIndex(max(0, self.vat.findData(saved_prefs.get("vat", "standard"))))
         self.reason = QLineEdit()
         top.addRow(tr("VAT:"), self.vat)
         top.addRow(tr("Note on the invoice:"), self.reason)
@@ -172,15 +166,15 @@ class InvoiceDialog(QDialog):
         self.design = QComboBox()
         self.design.addItem(tr("Classic"), "classic")
         self.design.addItem(tr("Modern (coloured header)"), "modern")
-        self.design.setCurrentIndex(max(0, self.design.findData(prefs.get("design", "classic"))))
+        self.design.setCurrentIndex(max(0, self.design.findData(saved_prefs.get("design", "classic"))))
         self.lang = QComboBox()
         self.lang.addItem("Deutsch", "de")
         self.lang.addItem("English", "en")
-        self.lang.setCurrentIndex(max(0, self.lang.findData(prefs.get("lang", "de"))))
+        self.lang.setCurrentIndex(max(0, self.lang.findData(saved_prefs.get("lang", "de"))))
         self.accent = ColorButton(text=tr("Accent colour"))
-        acc = prefs.get("accent", theme.ACCENT)
+        acc = saved_prefs.get("accent", theme.ACCENT)
         self.accent.set_color(tuple(int(acc[i:i + 2], 16) / 255 for i in (1, 3, 5)), emit=False)
-        self.logo = QLineEdit(prefs.get("logo", ""), placeholderText=tr("PNG or JPEG (optional)"))
+        self.logo = QLineEdit(saved_prefs.get("logo", ""), placeholderText=tr("PNG or JPEG (optional)"))
         pick = QPushButton(tr("Choose…"))
         pick.clicked.connect(lambda: (p := QFileDialog.getOpenFileName(self, tr("Logo"), "", tr("Images (*.png *.jpg *.jpeg)"))[0])
                              and self.logo.setText(p))
@@ -208,7 +202,7 @@ class InvoiceDialog(QDialog):
         bottom.addWidget(bb)
         v.addLayout(bottom)
 
-        for line in prefs.get("lines") or [{}]:
+        for line in saved_prefs.get("lines") or [{}]:
             self._add_line(line)
         self.type.currentIndexChanged.connect(self._dynamic)
         self.public.toggled.connect(self._dynamic)
@@ -362,13 +356,12 @@ class InvoiceDialog(QDialog):
             c = inv_cmds.compute(inv)
             inv["prepaid"] = str(c["totals"]["grand_total"])
             inv["payment_terms"] = "Bereits bezahlt." if self.lang.currentData() == "de" else "Already paid."
-        st = _settings()
-        st.setValue("invoice/seller", json.dumps({k: w.text().strip() for k, w in self.s.items()}))
-        st.setValue("invoice/last_number", inv["number"])
+        prefs.put_json("invoice/seller", {k: w.text().strip() for k, w in self.s.items()})
+        prefs.put("invoice/last_number", inv["number"])
         r, g, b = (round(x * 255) for x in (self.accent.rgb or tuple(int(theme.ACCENT[i:i + 2], 16) / 255 for i in (1, 3, 5))))
-        st.setValue("invoice/prefs", json.dumps({
+        prefs.put_json("invoice/prefs", {
             "design": self.design.currentData(), "lang": self.lang.currentData(), "accent": f"#{r:02x}{g:02x}{b:02x}",
-            "logo": self.logo.text().strip(), "due_days": self.due_days.value(), "vat": self.vat.currentData()}))
+            "logo": self.logo.text().strip(), "due_days": self.due_days.value(), "vat": self.vat.currentData()})
         self.result = {"invoice": inv, "design": self.design.currentData(), "lang": self.lang.currentData(),
                        "accent": f"#{r:02x}{g:02x}{b:02x}", "logo": self.logo.text().strip() or None,
                        "output": self.output.currentData()}

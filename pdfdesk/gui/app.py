@@ -100,7 +100,6 @@ def _ranges(pages0: list[int]) -> str:
     return ",".join(out)
 
 
-settings = prefs.store
 
 
 class Main(QMainWindow):
@@ -274,8 +273,8 @@ class Main(QMainWindow):
         h.addWidget(T("next", tr("Next page"), lambda: self.cur() and self.cur().goto(self.cur().current_page() + 1)))
         h.addWidget(T("last", tr("Last page"), lambda: self.cur() and self.cur().goto(self.cur().doc.page_count - 1)))
         h.addStretch(1)
-        h.addWidget(T("fit-width", tr("Fit width"), lambda: self.cur() and self.cur().fit_width()))
-        h.addWidget(T("fit-page", tr("Fit page (Ctrl+0)"), lambda: self.cur() and self.cur().fit_page()))
+        h.addWidget(T("fit-width", tr("Fit width"), self.fit_width))
+        h.addWidget(T("fit-page", tr("Fit page (Ctrl+0)"), self.fit_page))
         self.zoom_box = QComboBox(editable=True)
         self.zoom_box.addItems(ZOOMS)
         self.zoom_box.setFixedWidth(84)
@@ -324,7 +323,7 @@ class Main(QMainWindow):
                         ("Ctrl+W", lambda: self.close_tab(self.docs.currentIndex())),
                         ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
                         ("Ctrl+P", self.print_doc), ("F4", self.toggle_nav),
-                        ("Ctrl+0", lambda: self.cur() and self.cur().fit_page()),
+                        ("Ctrl+0", self.fit_page),
                         ("Ctrl+=", lambda: self._zoom(1.25)), ("Ctrl+-", lambda: self._zoom(0.8))):
             a = QAction(self)
             a.setShortcut(QKeySequence(key))
@@ -334,6 +333,14 @@ class Main(QMainWindow):
     def _zoom(self, k):
         if self.cur():
             self.cur().set_zoom(self.cur().zoom * k)
+
+    def fit_width(self):
+        if self.cur():
+            self.cur().fit_width()
+
+    def fit_page(self):
+        if self.cur():
+            self.cur().fit_page()
 
     def _tab_changed(self, _=None):
         v = self.cur()
@@ -353,7 +360,7 @@ class Main(QMainWindow):
     @staticmethod
     def _name(v: DocView) -> str:
         """File name of a saved document; for a new one (combined, converted) the name it will be saved under."""
-        return os.path.basename(v.path) if v.path else getattr(v, "new_name", None) or tr("untitled")
+        return os.path.basename(v.path) if v.path else v.new_name or tr("untitled")
 
     def refresh_panels(self):
         v = self.cur()
@@ -455,8 +462,7 @@ class Main(QMainWindow):
 
         # Home
         self.tools_group("Home")
-        G("Home", "View", [L("Fit Width", "fit-width", lambda: self.cur() and self.cur().fit_width()),
-                           L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
+        G("Home", "View", [L("Fit Width", "fit-width", self.fit_width), L("Fit Page", "fit-page", self.fit_page),
                            stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)),
                                  S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
         G("Home", "Find", [L("Advanced Search", "search-folder", self.folder_search)])
@@ -542,8 +548,7 @@ class Main(QMainWindow):
 
         # View
         self.tools_group("View")
-        G("View", "Zoom", [L("Fit Width", "fit-width", lambda: self.cur() and self.cur().fit_width()),
-                           L("Fit Page", "fit-page", lambda: self.cur() and self.cur().fit_page()),
+        G("View", "Zoom", [L("Fit Width", "fit-width", self.fit_width), L("Fit Page", "fit-page", self.fit_page),
                            stack(S("Zoom In", "zoom-in", lambda: self._zoom(1.25)), S("Zoom Out", "zoom-out", lambda: self._zoom(0.8)))])
         G("View", "Layers", [L("Layers", "layers", self.layers)])
         G("View", "Panels", [L("Navigation Panels", "navigation", self.toggle_nav, tip="Show or hide the navigation panels (F4)")])
@@ -622,7 +627,7 @@ class Main(QMainWindow):
     def set_language(self, code: str):
         if code == lang.language():
             return
-        settings().setValue("language", code)
+        prefs.put("language", code)
         if any(v.modified for v in self.views()):
             return QMessageBox.information(self, tr("Language"), tr("The new language is used the next time pdfdesk "
                                            "starts. Save your documents, then restart."))
@@ -726,7 +731,7 @@ class Main(QMainWindow):
         if not v:
             return
         t = a["tool"]
-        if t not in self.VIEW_ACTIONS and getattr(v, "readonly", False):
+        if t not in self.VIEW_ACTIONS and v.readonly:
             return self.error(tr("Read only"), tr("This document was opened with its user password and does not "
                                                  "allow changes. Open it with the permissions password to edit."))
         fn = self._handlers.get(t)
@@ -1021,9 +1026,8 @@ class Main(QMainWindow):
         v.toolAction.connect(self.on_tool)
         v.pageChanged.connect(lambda n: self._status())
         v.changed.connect(self._title)
-        self.docs.setCurrentIndex(self.docs.addTab(v, title))
-        QTimer.singleShot(0, v.fit_width)      # after the splitter and panels have their final size
-        self._tab_changed()
+        self.docs.setCurrentIndex(self.docs.addTab(v, title))     # currentChanged runs _tab_changed
+        QTimer.singleShot(0, v.fit_width)      # once the tab has its size; later resizes keep it fitted
 
     def new_doc(self, doc: pymupdf.Document, name: str):
         v = DocView(doc, None)
@@ -1889,7 +1893,7 @@ def launch(action: str = "open", files: list[str] = (), lock=None):
     app.setApplicationName("pdfdesk")
     app.setDesktopFileName("pdfdesk")
     app.setWindowIcon(app_icon())
-    code = settings().value("language") or QLocale.system().name()[:2]
+    code = prefs.get("language") or QLocale.system().name()[:2]
     lang.install(app, code if code in lang.LANGUAGES else "en")
     from .. import instance
     early: list[tuple[str, list[str]]] = []

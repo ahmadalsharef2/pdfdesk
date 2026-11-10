@@ -324,3 +324,14 @@ def test_zoom_keeps_the_point_under_the_mouse(v1_path):
     v.verticalScrollBar().setValue(0)                              # at the top of the document: stays there
     v.set_zoom(3.0)
     assert v.verticalScrollBar().value() == 0
+
+
+def test_new_document_can_be_edited(v1_path):
+    """A document made by Combine or Convert has no file yet; editing it must work like any other."""
+    _app()
+    w = Main()
+    w.new_doc(pymupdf.open(v1_path), "new.pdf")
+    v = w.cur()
+    assert not v.readonly and v.security is None and w.docs.tabText(w.docs.currentIndex()).startswith("new.pdf")
+    w.apply("Delete", lambda d: d.delete_page(0))
+    assert v.doc.page_count == 5 and v.modified

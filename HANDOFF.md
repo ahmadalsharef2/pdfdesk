@@ -21,7 +21,8 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q            # tests
   `dialogs.py`, `invoice.py`, `theme.py` (the red accent; every colour derives from it).
 - `pdfdesk/lang/`: `tr("English text")`; `de.py` and `ar.py` map English to German and Arabic. A missing
   key shows English. File > Language switches and restarts; Arabic turns the whole window right-to-left.
-- `tests/test_commands.py` (headless) and `tests/test_gui.py` (offscreen window).
+- `tests/test_commands.py` (headless), `tests/test_gui.py` (offscreen window) and `tests/test_lang.py`, which fails
+  when a `tr()` string has no German or Arabic entry, or a table keeps a string the interface no longer shows.
 
 ## Notes that are not obvious from the code
 

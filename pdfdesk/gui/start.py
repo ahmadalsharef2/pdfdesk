@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from PySide6.QtCore import QSettings, QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -18,22 +18,21 @@ from PySide6.QtWidgets import (
 )
 
 from ..lang import tr
-from . import theme
+from . import prefs, theme
 from .icons import icon
 
 MAX_RECENT = 20
 
 
 def recent_files() -> list[str]:
-    v = QSettings("pdfdesk", "pdfdesk").value("recent", [])
+    v = prefs.get("recent", [])
     return [p for p in (v if isinstance(v, list) else [v] if v else []) if p]
 
 
 def add_recent(path: str):
-    s = QSettings("pdfdesk", "pdfdesk")
     path = os.path.abspath(path)
     cur = [p for p in recent_files() if p != path]
-    s.setValue("recent", [path] + cur[:MAX_RECENT - 1])
+    prefs.put("recent", [path] + cur[:MAX_RECENT - 1])
 
 
 class Card(QFrame):
