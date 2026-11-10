@@ -67,8 +67,9 @@ class InlineTextEditor(QWidget):
         self.swatch = ColorButton(tuple(color) if color else (0, 0, 0))
         self.swatch.setToolTip(tr("Text color"))
         self.swatch.setFixedSize(26, 26)
-        for w in (self.spin, self.swatch):          # light controls next to the page, whatever the window style
-            w.setStyleSheet("background:#ffffff;color:#000000;border:1px solid #1e64ff;")
+        # light controls next to the page, whatever the window style (a border would squash the spin arrows)
+        self.spin.setStyleSheet("QDoubleSpinBox{background:#ffffff;color:#000000}")
+        self.swatch.setStyleSheet("background:#ffffff;border:1px solid #1e64ff;")
         row.addWidget(self.edit, 1)
         row.addWidget(self.spin, 0, Qt.AlignTop)
         row.addWidget(self.swatch, 0, Qt.AlignTop)

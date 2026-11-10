@@ -114,6 +114,7 @@ class Main(QMainWindow):
         super().__init__()
         self.setWindowTitle("pdfdesk")
         dialogs.size_for_screen(self, 1360, 900)
+        self.setAcceptDrops(True)               # drop PDFs (or Word files, images, …) onto the window to open them
         self.author = getpass.getuser()
         self.tool = "hand"
         self.stamp_name = "Approved"
@@ -1198,10 +1199,15 @@ class Main(QMainWindow):
             self.msg(tr("Match {i} of {n}", i=v.hit + 1, n=n) if n else tr("No matches for “{text}”", text=text))
 
     def _focus_comment(self, page0: int, xref: int):
+        """A comment picked in the Comments panel: show it and select it, so the keys and menus act on it."""
         v = self.cur()
         if v:
-            v.goto(page0)
-            v.selected = (page0, xref)
+            v.selected, v.obj_sel = (page0, xref), None
+            sel = v._selection()
+            if sel:
+                v.reveal(sel[0], sel[1])
+            else:
+                v.goto(page0)
             v.viewport().update()
 
     # ---- pages ---------------------------------------------------------------------------------------------
@@ -1303,6 +1309,17 @@ class Main(QMainWindow):
             self.new_doc(run("Convert.Combine", files), "combined.pdf")
         except Exception as e:  # noqa: BLE001
             self.error(tr("Combine"), e)
+
+    def dragEnterEvent(self, e):
+        if any(u.isLocalFile() for u in e.mimeData().urls()):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+        e.acceptProposedAction()
+        for p in paths:
+            if os.path.isfile(p):
+                self.open_any(p)
 
     def open_any(self, path: str):
         """Open a PDF, or convert another supported file (Word, image, …) into a new unsaved PDF."""

@@ -241,6 +241,9 @@ class Session:
     def key(self, k, mods=Qt.NoModifier, text=""):
         faulthandler.dump_traceback_later(45, exit=True)
         target = QApplication.focusWidget() or self.v
+        ed = self.v._editor if self.v is not None else None
+        if ed is not None and not ed.isAncestorOf(target):       # an inactive test window has no focus widget
+            target = ed.edit
         QApplication.sendEvent(target, QKeyEvent(QEvent.KeyPress, k, mods, text))
         QApplication.sendEvent(target, QKeyEvent(QEvent.KeyRelease, k, mods, text))
         app.processEvents()

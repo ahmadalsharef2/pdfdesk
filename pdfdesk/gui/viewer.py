@@ -571,6 +571,11 @@ class DocView(QAbstractScrollArea):
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return super().mousePressEvent(e)
+        if self._editor is not None:            # a click elsewhere ends the edit and keeps it
+            kind = self._edit_target["kind"]
+            self._commit_editor()
+            if kind == "new":                   # it only finishes the new text; the next click starts another
+                return
         pos = e.position()
         i, pt = self.view_to_page(pos)
         self.setFocus()
@@ -1270,10 +1275,7 @@ class DocView(QAbstractScrollArea):
         w = self._widget(i, xref)
         if w is None:
             return
-        r = self.page_rect_to_view(i, w.rect)
-        if r.top() < 0 or r.bottom() > self.viewport().height():
-            bar = self.verticalScrollBar()
-            bar.setValue(int(bar.value() + r.top() - self.viewport().height() / 3))
+        self.reveal(i, w.rect)
         self.fill_field(i, w)
 
     def _commit_editor(self, step: int = 0):
@@ -1348,8 +1350,11 @@ class DocView(QAbstractScrollArea):
         if not self.hits:
             return
         self.hit = k % len(self.hits)
-        i, r = self.hits[self.hit]
-        v = self.page_rect_to_view(i, r)
+        self.reveal(*self.hits[self.hit])
+
+    def reveal(self, i: int, rect):
+        """Scroll so a rectangle on page i is in view, a third down from the top, unless it already is."""
+        v = self.page_rect_to_view(i, rect)
         vp = self.viewport()
         if v.top() < 0 or v.bottom() > vp.height():
             bar = self.verticalScrollBar()
