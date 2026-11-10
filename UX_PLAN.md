@@ -155,3 +155,11 @@ Batch 1 (sweep + journeys, 2026-11-10):
 - The open editor follows scrolling and resizing instead of ending the edit; it hides the text it replaces.
 - Page ranges accept spaces, en dashes and semicolons; a wrong range gets a clear message.
 - Resizing a shape no longer forces its proportions (images and text keep them; Shift switches).
+
+Batch 2:
+- Edit Text reflow wrote spaces as NUL when the embedded subset font has no space glyph (copy, search and
+  screen readers saw "best\x00models"); words are now set one by one with a real gap.
+- Find: Enter again, F3 / Ctrl+G and Shift+F3 step through hits ("Match 3 of 12"); the current hit is orange.
+- Note, Text box (drag or click) and Callout are typed on the page like Typewriter.
+- Area highlights are plain rectangles (MuPDF drew them with round ends), also after recoloring or moving.
+- OCR shows page-by-page progress with Cancel (undoes it); long jobs show a wait cursor.

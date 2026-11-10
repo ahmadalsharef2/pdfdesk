@@ -330,6 +330,12 @@ def comment_tools(path=None, zoom=1.0, tag="contract", pg=0):
         s.tool(t)
         n = len(s.annots(pg))
         s.drag(s.vpos(pg, r[0], r[1]), s.vpos(pg, r[2], r[3]))
+        if t in ("textbox", "callout"):
+            if s.v._editor is None:
+                s.bad(f"{t}: no editor to type the text on the page")
+            else:
+                s.type_text(f"{t} text")
+                s.key(Qt.Key_Escape)
         res = _check_new_comment(s, pg, n, t, pymupdf.Rect(r))
         if res and t in ("rectangle", "oval") and abs(res[1].width - (r[2] - r[0])) > 4:
             s.bad(f"{t}: width {res[1].width:.0f} instead of {r[2] - r[0]}")
@@ -340,7 +346,7 @@ def comment_tools(path=None, zoom=1.0, tag="contract", pg=0):
         objs = len(s.v.page_objects(pg))
         asked.clear()
         s.click(s.vpos(pg, x, y))
-        if t in ("typewriter", "add-text"):
+        if t in ("typewriter", "add-text", "note"):
             if s.v._editor is None:
                 s.bad(f"{t}: clicking opened no editor on the page")
                 continue
@@ -574,6 +580,101 @@ def scanned():
     if "OCR" not in edit.state()["msg"]:
         edit.bad("Edit Text on a scanned page gives no hint to run OCR")
     edit.close()
+
+
+@journey
+def ocr_scan():
+    """OCR a scanned document from the window, with progress, then find and select its text."""
+    s = Session("ocr")
+    v = s.open(doc_scanned())
+    answers["text"] = "en"
+    t0 = time.time()
+    seen = []
+    dlg, progress = s.w._progress("OCR")
+    s.w._ocr_run(False, ["en"], lambda n, total: (seen.append((n, total)), progress(n, total)))
+    dlg.close()
+    s.note(f"OCR of {v.doc.page_count} pages: {time.time() - t0:.1f} s, progress calls {seen[:3]}…, msg {s.state()['msg']!r}")
+    if not seen:
+        s.bad("OCR showed no progress")
+    s.w.find_box.setText("Acme")
+    s.w.do_find()
+    if not v.hits:
+        s.bad(f"after OCR, Find does not find 'Acme' ({s.state()['msg']!r})")
+    s.shot("found")
+    s.w.do_find()
+    s.note(f"Enter again in Find: {s.state()['msg']!r}")
+    answers["text"] = "Journey text"
+    s.close()
+
+
+@journey
+def clipboard_across():
+    """Copy a comment and an image in one document, paste both into another, at the mouse."""
+    s = Session("clip")
+    a = s.open(doc_images())
+    a.set_zoom(1.0)
+    a.goto(0)
+    s.w.apply("box", lambda d: run_cmd("Comment.Rectangle", d, 1, (330, 400, 430, 450)))
+    s.tool("hand")
+    s.click(s.vpos(0, 330, 425))
+    s.key(Qt.Key_C, Qt.ControlModifier)
+    s.note(f"copy comment: {s.state()['msg']!r}")
+    b = s.open(doc_contract())
+    b.set_zoom(1.0)
+    b.goto(0)
+    app.processEvents()
+    QCursor_pos = s.vpos(0, 300, 600)
+    from PySide6.QtGui import QCursor
+    QCursor.setPos(b.viewport().mapToGlobal(QCursor_pos.toPoint()))
+    n = len(s.annots(0))
+    s.key(Qt.Key_V, Qt.ControlModifier)
+    if len(s.annots(0)) != n + 1:
+        s.bad(f"pasting a comment into another document did nothing ({s.state()['msg']!r})")
+    else:
+        r = s.annots(0)[-1][1]
+        s.note(f"pasted comment at {r} (mouse at 300,600)")
+        if b.selected is None:
+            s.bad("the pasted comment is not selected")
+    s.w.docs.setCurrentWidget(a)
+    app.processEvents()
+    s.tool("edit-object")
+    img = next(o for o in a.page_objects(0) if o.kind == "image")
+    c = img.rect.tl + (img.rect.br - img.rect.tl) / 2
+    s.click(s.vpos(0, c.x, c.y))
+    s.key(Qt.Key_C, Qt.ControlModifier)
+    s.w.docs.setCurrentWidget(b)
+    app.processEvents()
+    objs = len(b.page_objects(0))
+    s.key(Qt.Key_V, Qt.ControlModifier)
+    if len(b.page_objects(0)) <= objs:
+        s.bad(f"pasting an image into another document did nothing ({s.state()['msg']!r})")
+    elif not b.obj_sel:
+        s.bad("the pasted image is not selected")
+    s.shot("pasted")
+    s.close()
+
+
+@journey
+def redact_flow():
+    s = Session("redact")
+    v = s.open(doc_contract())
+    v.set_zoom(1.0)
+    v.goto(0)
+    s.tool("select")
+    words = v.doc[0].get_text("words")
+    mail = next(w for w in words if "@" in w[4])
+    s.drag(s.vpos(0, mail[0] + 1, (mail[1] + mail[3]) / 2), s.vpos(0, mail[2] - 1, (mail[1] + mail[3]) / 2))
+    items = s.context(s.vpos(0, mail[0] + 3, (mail[1] + mail[3]) / 2))
+    if "Mark for Redaction" not in items:
+        s.bad(f"no Mark for Redaction in the text menu: {items}")
+    v._emit(tool="redact-rects", page=1, rects=v._sel_rects())
+    s.note(f"after marking: {s.state()['msg']!r}")
+    s.w.apply_redactions()
+    txt = v.doc[0].get_text()
+    if "jane.doe" in txt:
+        s.bad("the e-mail address is still in the text after Apply Redactions")
+    s.shot("redacted")
+    s.close()
 
 
 @journey

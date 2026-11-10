@@ -55,7 +55,7 @@ ANNOT_TOOLS = {"Highlight": "highlight", "Underline": "underline", "StrikeOut": 
                "Text": "note", "FreeText": "typewriter", "Square": "rectangle", "Circle": "oval", "Line": "line",
                "Polygon": "polygon", "PolyLine": "polyline", "Ink": "pencil"}
 HANDLE = 4                                                     # half size of a resize handle, in pixels
-TYPED_TOOLS = {"typewriter", "add-text"}                       # click, then type on the page
+TYPED_TOOLS = {"typewriter", "add-text", "note"}               # click, then type on the page
 FILLABLE = {pymupdf.PDF_WIDGET_TYPE_TEXT: "text", pymupdf.PDF_WIDGET_TYPE_COMBOBOX: "combo",
             pymupdf.PDF_WIDGET_TYPE_LISTBOX: "list"}
 TOGGLES = {pymupdf.PDF_WIDGET_TYPE_CHECKBOX, pymupdf.PDF_WIDGET_TYPE_RADIOBUTTON, pymupdf.PDF_WIDGET_TYPE_BUTTON}
@@ -88,6 +88,9 @@ class DocView(QAbstractScrollArea):
         self.undo_stack: list[tuple[str, bytes]] = []
         self.redo_stack: list[tuple[str, bytes]] = []
         self.highlights: dict[int, list[pymupdf.Rect]] = {}
+        self.hits: list[tuple[int, pymupdf.Rect]] = []       # search hits in reading order
+        self.hit = -1                                          # the current one
+        self.find_text = ""
         self.selected: tuple[int, int] | None = None          # (page index, annot xref)
         self.obj_sel: tuple[int, int] | None = None           # (page index, object number) for Edit Object
         self._drag: dict | None = None                         # moving or resizing the selection
@@ -137,6 +140,7 @@ class DocView(QAbstractScrollArea):
         self.selected = self.obj_sel = None
         self.text_sel = None
         self.highlights.clear()
+        self.hits, self.hit, self.find_text = [], -1, ""
         self.after_edit()
 
     def undo(self) -> str | None:
@@ -347,6 +351,11 @@ class DocView(QAbstractScrollArea):
             p.drawImage(int(x), int(top), self._render(i))
             for r in self.highlights.get(i, []):
                 p.fillRect(self.page_rect_to_view(i, r), QColor(255, 220, 0, 110))
+            if 0 <= self.hit < len(self.hits) and self.hits[self.hit][0] == i:      # the current hit stands out
+                r = self.page_rect_to_view(i, self.hits[self.hit][1]).adjusted(-2, -2, 2, 2)
+                p.fillRect(r, QColor(255, 140, 0, 120))
+                p.setPen(QPen(QColor(230, 90, 0), 1.5))
+                p.drawRect(r)
         self._paint_overlays(p)
         p.end()
 
@@ -715,6 +724,12 @@ class DocView(QAbstractScrollArea):
             self._hint(NO_TEXT_HINT)
         elif t == "select":
             self.text_sel = (i, start, end) if moved and self._text_between(i, start, end) else None
+        elif t == "textbox":                                     # a box (a click: one of default size), then type
+            r = pymupdf.Rect(start, end).normalize() if moved else pymupdf.Rect(start, start + (180, 40))
+            self.type_new_text(i, r.tl, t, rect=r, emit={"rect": r})
+        elif t == "callout" and moved:                           # from the point to the box, then type
+            r = pymupdf.Rect(end.x, end.y, end.x + 140, end.y + 50)
+            self.type_new_text(i, end, t, rect=r, emit={"start": start, "stop": end})
         elif t in RECT_TOOLS:
             self._emit(tool=t, page=page, point=start, rect=pymupdf.Rect(start, end).normalize() if moved else None)
         elif t in LINE_TOOLS:
@@ -1104,15 +1119,19 @@ class DocView(QAbstractScrollArea):
         ed = InlineTextEditor(self.viewport(), ln.text, ln.size, ln.color, self.zoom)
         self._start_editor(ed, {"kind": "line", "page": i, "rect": ln.rect, "line": ln})
 
-    def type_new_text(self, i: int, point, tool: str):
-        """Typewriter and Add Text: type at the point clicked; Enter starts a new line, clicking elsewhere or
-        Escape keeps the text, Ctrl+Enter too."""
-        size = prefs.get_float(f"text_size/{tool}", 10.0)
-        color = self.color_for(tool) or (0, 0, 0)
-        ed = InlineTextEditor(self.viewport(), "", size, color, self.zoom, multiline=True, escape_keeps=True)
+    def type_new_text(self, i: int, point, tool: str, rect=None, emit: dict | None = None):
+        """Typewriter, Add Text, Note, Text box, Callout: type where the comment goes; Enter starts a new line,
+        clicking elsewhere, Escape or Ctrl+Enter keeps the text. emit: what the tool action carries besides the
+        text (default: the point). Only Typewriter and Add Text offer a size and a color."""
+        styled = tool in ("typewriter", "add-text")
+        size = prefs.get_float(f"text_size/{tool}", 10.0) if styled else 11.0
+        color = (self.color_for(tool) or (0, 0, 0)) if styled else (0, 0, 0)
+        ed = InlineTextEditor(self.viewport(), "", size, color, self.zoom, multiline=True, escape_keeps=True,
+                              controls=styled)
         pt = pymupdf.Point(point)
-        rect = pymupdf.Rect(pt.x, pt.y, pt.x + 4, pt.y + size * 1.3 + 4)
-        self._start_editor(ed, {"kind": "new", "page": i, "rect": rect, "point": pt, "tool": tool})
+        box = pymupdf.Rect(rect) if rect is not None else pymupdf.Rect(pt.x, pt.y, pt.x + 4, pt.y + size * 1.3 + 4)
+        self._start_editor(ed, {"kind": "new", "page": i, "rect": box, "tool": tool, "styled": styled,
+                                "emit": emit if emit is not None else {"point": pt}})
 
     def edit_comment_text(self, i: int, xref: int) -> bool:
         """A typewriter or text box comment: change its text where it is. False for other comments."""
@@ -1183,7 +1202,8 @@ class DocView(QAbstractScrollArea):
         text, size, color = ed.text(), ed.size(), ed.color()
         if t["kind"] == "new":
             if text.strip():
-                self._emit(tool=t["tool"], page=page, point=t["point"], text=text.rstrip("\n"), size=size, color=color)
+                style = {"size": size, "color": color} if t["styled"] else {}
+                self._emit(tool=t["tool"], page=page, text=text.rstrip("\n"), **t["emit"], **style)
             return
         if t["kind"] == "annot":
             style = {}
@@ -1218,15 +1238,33 @@ class DocView(QAbstractScrollArea):
 
     # ---- search ----------------------------------------------------------------------------------------------
     def find(self, text: str) -> int:
+        """Mark every hit and show the first one at or after the current page."""
         self.highlights.clear()
-        total = 0
+        self.hits, self.hit, self.find_text = [], -1, text
         for i, p in enumerate(self.doc):
             rs = search.find(p, text) if text else []
             if rs:
                 self.highlights[i] = rs
-                total += len(rs)
-        if self.highlights:
-            self.goto(min(self.highlights))
+                self.hits += [(i, r) for r in rs]
+        if self.hits:
+            here = self.current_page()
+            self.show_hit(next((k for k, (i, _r) in enumerate(self.hits) if i >= here), 0))
         self.viewport().update()
-        return total
+        return len(self.hits)
+
+    def show_hit(self, k: int):
+        """Make hit k the current one and scroll it into view, a third down from the top."""
+        if not self.hits:
+            return
+        self.hit = k % len(self.hits)
+        i, r = self.hits[self.hit]
+        v = self.page_rect_to_view(i, r)
+        vp = self.viewport()
+        if v.top() < 0 or v.bottom() > vp.height():
+            bar = self.verticalScrollBar()
+            bar.setValue(int(bar.value() + v.top() - vp.height() / 3))
+        if v.left() < 0 or v.right() > vp.width():
+            bar = self.horizontalScrollBar()
+            bar.setValue(int(bar.value() + v.left() - vp.width() / 3))
+        self.viewport().update()
 

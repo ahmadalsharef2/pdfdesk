@@ -40,7 +40,7 @@ class InlineTextEditor(QWidget):
     cancelled = Signal()                    # Escape (unless escape_keeps)
 
     def __init__(self, parent, text: str, size: float, color, zoom: float, multiline: bool = False,
-                 escape_keeps: bool = False):
+                 escape_keeps: bool = False, controls: bool = True):
         super().__init__(parent)
         self.zoom = zoom
         self.multiline = multiline
@@ -72,6 +72,9 @@ class InlineTextEditor(QWidget):
         row.addWidget(self.edit, 1)
         row.addWidget(self.spin, 0, Qt.AlignTop)
         row.addWidget(self.swatch, 0, Qt.AlignTop)
+        self.controls = controls
+        self.spin.setVisible(controls)
+        self.swatch.setVisible(controls)
         self.spin.valueChanged.connect(self._refit)
         self.swatch.changed.connect(lambda _c: self._refit())
         self.edit.installEventFilter(self)
@@ -97,7 +100,7 @@ class InlineTextEditor(QWidget):
         lines = self.text().split("\n") or [""]
         w = max(fm.horizontalAdvance(ln) for ln in lines) + fm.averageCharWidth() * 3 + 12
         h = fm.lineSpacing() * len(lines) + 12
-        width = max(int(self._box.width()) + 6, w, 160) + CONTROLS_W
+        width = max(int(self._box.width()) + 6, w, 160) + (CONTROLS_W if self.controls else 0)
         if self.parentWidget() is not None:
             width = min(width, max(200, self.parentWidget().width() - int(self._box.x())))
         self.setGeometry(int(self._box.x()) - 3, int(self._box.y()) - 3, width,

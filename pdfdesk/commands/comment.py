@@ -119,12 +119,33 @@ def insert_text(doc, page, point, text: str, author=None):
     return _finish(a, author, text, color=BLUE)
 
 
+AREA = "PdfDeskArea"            # marks an area highlight, whose appearance is a plain rectangle
+
+
 @command("Comment.AreaHighlight")
 def area_highlight(doc, page, rect, author=None, color=YELLOW):
     r = pymupdf.Rect(rect)
     p = doc[page - 1]
     a = p.add_highlight_annot(quads=[r.quad])
-    return _finish(a, author, color=color)
+    res = _finish(a, author, color=color)
+    doc.xref_set_key(a.xref, AREA, "true")
+    _flat_area(doc, p, a)
+    return res
+
+
+def _flat_area(doc, page: pymupdf.Page, a):
+    """MuPDF draws a highlight with round ends; an area highlight is a plain rectangle, as in Foxit and Acrobat."""
+    kind, val = doc.xref_get_key(a.xref, "AP/N")
+    if kind != "xref":
+        return
+    n = int(val.split()[0])
+    r = pymupdf.Rect(a.vertices[0], a.vertices[3]) if a.vertices else pymupdf.Rect(a.rect)
+    q = r.normalize() * ~page.transformation_matrix                     # page space -> PDF user space
+    q = q.normalize()
+    rgb = " ".join(f"{c:g}" for c in (a.colors.get("stroke") or YELLOW))
+    doc.update_stream(n, f"q /H gs {rgb} rg {q.x0:g} {q.y0:g} {q.width:g} {q.height:g} re f Q".encode())
+    doc.xref_set_key(n, "BBox", f"[{q.x0:g} {q.y0:g} {q.x1:g} {q.y1:g}]")
+    doc.xref_set_key(a.xref, "Rect", f"[{q.x0:g} {q.y0:g} {q.x1:g} {q.y1:g}]")
 
 
 # ---- pin -------------------------------------------------------------------------------------------
@@ -441,6 +462,8 @@ def set_style(doc, page, xref: int, text: str | None = None, color=None, fill=_K
             a.set_colors(stroke=color if color is not None else a.colors["stroke"],
                          fill=(fill or []) if fill is not _KEEP else a.colors["fill"])
         a.update()
+        if doc.xref_get_key(xref, AREA)[1] == "true":
+            _flat_area(doc, _p, a)
         return True
     size, tcol = _font_style(doc, xref)
     size = fontsize or size

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -65,10 +66,10 @@ TOOL_HINTS = {
     "highlight": "Highlight: drag across text", "underline": "Underline: drag across text",
     "strikeout": "Strikeout: drag across text", "squiggly": "Squiggly: drag across text",
     "replace-text": "Replace text: drag across the text to replace", "area-highlight": "Area highlight: drag",
-    "note": "Note: click where the note goes", "file": "File attachment: click where it goes",
+    "note": "Note: click and type the note; click elsewhere or Esc to finish", "file": "File attachment: click where it goes",
     "typewriter": "Typewriter: click and type; Enter starts a new line, click elsewhere or Esc to finish",
-    "textbox": "Text box: drag a box",
-    "callout": "Callout: drag from the point to the box position",
+    "textbox": "Text box: drag a box (or click), then type; click elsewhere or Esc to finish",
+    "callout": "Callout: drag from the point to where the box goes, then type",
     "rectangle": "Rectangle: drag", "oval": "Oval: drag", "line": "Line: drag", "arrow": "Arrow: drag",
     "polygon": "Polygon: click points, double-click or Enter to finish",
     "cloud": "Cloud: click points, double-click or Enter to finish",
@@ -102,6 +103,10 @@ def _ranges(pages0: list[int]) -> str:
     return ",".join(out)
 
 
+
+
+class Cancelled(Exception):
+    """The user pressed Cancel in a progress dialog; the step is undone without an error box."""
 
 
 class Main(QMainWindow):
@@ -325,6 +330,8 @@ class Main(QMainWindow):
                         ("Ctrl+W", lambda: self.close_tab(self.docs.currentIndex())),
                         ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
                         ("Ctrl+P", self.print_doc), ("F4", self.toggle_nav),
+                        ("F3", lambda: self.do_find(1)), ("Shift+F3", lambda: self.do_find(-1)),
+                        ("Ctrl+G", lambda: self.do_find(1)),
                         ("Ctrl+0", self.fit_page),
                         ("Ctrl+=", lambda: self._zoom(1.25)), ("Ctrl+-", lambda: self._zoom(0.8))):
             a = QAction(self)
@@ -776,6 +783,9 @@ class Main(QMainWindow):
             r = dialogs.TextDialog.ask(self, tr(title), tr(label))
             return then(r) if r else None
 
+        def typed(a, title, label, then):       # text typed on the page, else asked for
+            return then(a["text"]) if a.get("text") else asked(title, label, then)
+
         def pick_file(title, filt=""):
             return QFileDialog.getOpenFileName(self, tr(title), "", tr(filt) if filt else "")[0]
 
@@ -842,7 +852,7 @@ class Main(QMainWindow):
             "stamp": lambda a, p: a["rect"] and cmd("Stamp", "Comment.Stamp", p, a["rect"], self.stamp_name, author=self.author),
         }
         text = {
-            "note": lambda a, p: asked("Note", "Note text:", lambda r: cmd(
+            "note": lambda a, p: typed(a, "Note", "Note text:", lambda r: cmd(
                 "Note", "Comment.Note", p, a["point"], r, author=self.author, **cw(a))),
             "file": lambda a, p: (f := pick_file("Attach file")) and cmd(
                 "Attach file", "Comment.File", p, a["point"], f, author=self.author),
@@ -853,9 +863,9 @@ class Main(QMainWindow):
                 "Add text", "Text.Add", p, a["point"], r["text"], fontsize=r["size"], color=r["color"]))),
             "insert-text": lambda a, p: asked("Insert text", "Text to insert:", lambda r: cmd(
                 "Insert text", "Comment.InsertText", p, a["point"], r, author=self.author)),
-            "textbox": lambda a, p: a["rect"] and asked("Text box", "Text:", lambda r: cmd(
+            "textbox": lambda a, p: a["rect"] and typed(a, "Text box", "Text:", lambda r: cmd(
                 "Text box", "Comment.Textbox", p, a["rect"], r, author=self.author)),
-            "callout": lambda a, p: asked("Callout", "Text:", lambda r: cmd(
+            "callout": lambda a, p: typed(a, "Callout", "Text:", lambda r: cmd(
                 "Callout", "Comment.Callout", p, a["start"],
                 pymupdf.Rect(a["stop"].x, a["stop"].y, a["stop"].x + 140, a["stop"].y + 50), r, author=self.author)),
             "edit-text-commit": lambda a, p: cmd("Edit text", "Text.EditLine", p, a["point"], a["text"],
@@ -992,7 +1002,10 @@ class Main(QMainWindow):
         except Exception as e:  # noqa: BLE001
             v.rollback()
             v.modified = bool(v.undo_stack) or v.modified
-            self.error(label, e)
+            if isinstance(e, Cancelled):
+                self.msg(tr("Cancelled: {what}", what=label))
+            else:
+                self.error(label, e)
             return None
         if isinstance(res, pymupdf.Document) and res is not v.doc:
             v.replace_doc(res)
@@ -1163,13 +1176,18 @@ class Main(QMainWindow):
         self.msg(r.stdout.strip() or r.stderr.strip())
 
     # ---- find / panels --------------------------------------------------------------------------------
-    def do_find(self):
+    def do_find(self, step: int = 1):
+        """Enter in the Find box: search; Enter again (or F3, Shift+F3 back) steps through the hits."""
         v = self.cur()
+        text = self.find_box.text()
+        if v and text and text == v.find_text and v.hits:
+            v.show_hit(v.hit + step)
+            return self.msg(tr("Match {i} of {n}", i=v.hit + 1, n=len(v.hits)))
         if v:
-            n = v.find(self.find_box.text())
+            n = v.find(text)
             if n == 0 and not any(v.doc[i].get_text("text").strip() for i in range(min(v.doc.page_count, 5))):
                 return self.msg(tr("This document has no text layer (a scan). Run Convert > OCR to search it."))
-            self.msg(tr("{n} matches", n=n))
+            self.msg(tr("Match {i} of {n}", i=v.hit + 1, n=n) if n else tr("No matches for “{text}”", text=text))
 
     def _focus_comment(self, page0: int, xref: int):
         v = self.cur()
@@ -1721,8 +1739,31 @@ class Main(QMainWindow):
         f.close()
         return f.name
 
+    def _progress(self, what: str):
+        """A progress dialog for a long job over pages and its callback progress(n, total); Cancel stops the job
+        at the next page and undoes it."""
+        dlg = QProgressDialog(what, tr("Cancel"), 0, 0, self)
+        dlg.setWindowTitle(what)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(300)
+        dlg.setAutoClose(False)
+
+        def progress(n: int, total: int):
+            dlg.setMaximum(total)
+            dlg.setValue(n)
+            dlg.setLabelText(tr("{what}: page {n} of {total}", what=what, n=n + 1, total=total))
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                raise Cancelled()
+        return dlg, progress
+
     def _busy(self, text: str):
+        """Say what a long job is doing and show a wait cursor until the window is idle again, which is when
+        the job (run right after this call, in the same event) has finished."""
         self.msg(text)
+        if QApplication.overrideCursor() is None:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            QTimer.singleShot(0, QApplication.restoreOverrideCursor)
         QApplication.processEvents()
 
     def create_from_file(self):
@@ -1775,13 +1816,21 @@ class Main(QMainWindow):
             return
         self._busy(tr("Running OCR…"))
         language_list = [x for x in langs.replace(",", "+").split("+") if x.strip()]
-        if kind == kinds[0]:
-            res = self.apply(tr("OCR (editable text)"), lambda d: run("Ocr.Editable", d, languages=language_list))
+        dlg, progress = self._progress(tr("OCR"))
+        try:
+            self._ocr_run(kind == kinds[0], language_list, progress)
+        finally:
+            dlg.close()
+
+    def _ocr_run(self, editable: bool, language_list, progress):
+        if editable:
+            res = self.apply(tr("OCR (editable text)"), lambda d: run("Ocr.Editable", d, languages=language_list,
+                                                                     progress=progress))
             if isinstance(res, dict):
                 self.msg(tr("OCR done: {pages} page(s), {lines} lines, {suspects} uncertain word(s) to check",
                             pages=res["pages"], lines=res["lines"], suspects=len(res["suspects"])))
             return
-        res = self.apply(tr("OCR"), lambda d: run("Ocr.Searchable", d, languages=language_list))
+        res = self.apply(tr("OCR"), lambda d: run("Ocr.Searchable", d, languages=language_list, progress=progress))
         if isinstance(res, dict):
             self.msg(tr("OCR done: {pages} page(s), {lines} lines", pages=res["pages"], lines=res["lines"]))
 

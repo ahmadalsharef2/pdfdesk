@@ -150,11 +150,30 @@ def _remove_text(page, rect):
     _without_other_redactions(page, go)
 
 
+def _space(f: pymupdf.Font, size: float) -> float:
+    """Width of a space; a subset font often has no space glyph, and glyph 0 is no space."""
+    return f.text_length(" ", size) if f.has_glyph(32) else size * 0.25
+
+
+def _length(f: pymupdf.Font, text: str, size: float) -> float:
+    return sum(f.text_length(w, size) for w in text.split(" ")) + text.count(" ") * _space(f, size)
+
+
 def _write(page, origin, text, fontname, fontfile, fontbuffer, size, color, rotate=0):
     if not text:
         return
     if fontfile or fontbuffer:
         page.insert_font(fontname=fontname, fontfile=fontfile, fontbuffer=fontbuffer)
+        f = pymupdf.Font(fontbuffer=fontbuffer) if fontbuffer else pymupdf.Font(fontfile=fontfile)
+        if " " in text and not f.has_glyph(32) and rotate == 0:
+            # without a space glyph a space would be written as glyph 0 and read back as NUL: set the words
+            # one by one with a space's width between them, so copying and searching see real spaces
+            x, y = pymupdf.Point(origin)
+            for w in text.split(" "):
+                if w:
+                    page.insert_text((x, y), w, fontname=fontname, fontsize=size, color=color)
+                x += f.text_length(w, size) + _space(f, size)
+            return
     page.insert_text(origin, text, fontname=fontname, fontsize=size, color=color, rotate=rotate)
 
 
@@ -291,7 +310,7 @@ def _reflow(doc, page, para: list[Line], new_text: str):
     fonts = _fonts(doc, page, words)
 
     def width(w, st):
-        return fonts[st][3].text_length(w, st[1])
+        return _length(fonts[st][3], w, st[1])
 
     step = (para[-1].origin.y - para[0].origin.y) / (len(para) - 1) if len(para) > 1 else ln.size * 1.2
     xs = [l.origin.x for l in para]
@@ -337,7 +356,7 @@ def _reflow(doc, page, para: list[Line], new_text: str):
         for t, st in runs:
             name, ffile, fbuf, f = fonts[st]
             _write(page, (x, origin.y), t, name, ffile, fbuf, st[1], st[2])
-            x += f.text_length(t, st[1])
+            x += _length(f, t, st[1])
     for l in para[len(rows):]:
         _remove_text(page, l.rect)
 
