@@ -180,11 +180,12 @@ def _text_width(text: str, size: float) -> float:
 @command("Comment.Typewriter")
 def typewriter(doc, page, point, text: str, fontsize=12, color=(0, 0, 0), author=None):
     p = doc[page - 1]
-    x, y = pymupdf.Point(point)
+    x, y = pymupdf.Point(point) * p.rotation_matrix       # as seen: on a rotated page the text stands upright
     rows = text.split("\n")
     w = max(_text_width(r, fontsize) for r in rows) + fontsize
-    rect = pymupdf.Rect(x, y, min(x + w, p.rect.width), y + fontsize * 1.3 * len(rows) + 4)
-    a = p.add_freetext_annot(rect, text, fontsize=fontsize, fontname="helv", text_color=color, border_width=0)
+    rect = pymupdf.Rect(x, y, min(x + w, p.rect.width), y + fontsize * 1.3 * len(rows) + 4) * p.derotation_matrix
+    a = p.add_freetext_annot(rect.normalize(), text, fontsize=fontsize, fontname="helv", text_color=color, border_width=0,
+                             rotate=p.rotation)
     doc.xref_set_key(a.xref, "IT", "/FreeTextTypeWriter")
     return _finish(a, author)
 

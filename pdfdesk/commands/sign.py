@@ -40,7 +40,8 @@ def typed(doc, page: int, rect, name: str, color=(0, 0, 0.55)):
 @command("Sign.Image")
 def image(doc, page: int, rect, path: str | None = None, data: bytes | None = None):
     with adding(doc, page):                        # the Hand tool can pick the image up afterwards
-        doc[page - 1].insert_image(pymupdf.Rect(rect), filename=path, stream=data, keep_proportion=True)
+        p = doc[page - 1]                          # on a rotated page (a sideways scan) it stands upright as seen
+        p.insert_image(pymupdf.Rect(rect), filename=path, stream=data, keep_proportion=True, rotate=p.rotation)
     return pymupdf.Rect(rect)
 
 
@@ -102,9 +103,10 @@ def caption(doc, page: int, rect, lines: list[str], color=(0.4, 0.4, 0.4), max_s
 def place(doc, page: int, rect, spec: dict, lines: list[str] | None = None):
     """Fill & Sign: the signature (typed, ink or image spec) and its caption, placed as one object on the
     page, so Edit Object can move or resize it later. Returns the object's box."""
-    r = pymupdf.Rect(rect)
-    pad = 150                                            # room for a caption wider than the signature
-    tmp = pymupdf.open()
+    p = doc[page - 1]
+    r = (pymupdf.Rect(rect) * p.rotation_matrix).normalize()      # the box as seen: on a rotated page (a sideways
+    pad = 150                                                     # scan) the signature stands upright in it
+    tmp = pymupdf.open()                                 # pad: room for a caption wider than the signature
     tmp.new_page(width=r.width + 2 * pad, height=r.height + 120)
     box = pymupdf.Rect(pad, 0, pad + r.width, r.height)
     if spec["kind"] == "typed":
@@ -114,9 +116,10 @@ def place(doc, page: int, rect, spec: dict, lines: list[str] | None = None):
     else:
         ink(tmp, 1, fit_strokes(spec["strokes"], spec["size"], box))
     clip = box | caption(tmp, 1, box, lines) if lines else box
-    target = pymupdf.Rect(clip.x0 - pad + r.x0, r.y0, clip.x1 - pad + r.x0, r.y0 + clip.height)
+    seen = pymupdf.Rect(clip.x0 - pad + r.x0, r.y0, clip.x1 - pad + r.x0, r.y0 + clip.height)
+    target = (seen * p.derotation_matrix).normalize()
     with adding(doc, page):
-        doc[page - 1].show_pdf_page(target, tmp, 0, clip=clip)
+        p.show_pdf_page(target, tmp, 0, clip=clip, rotate=p.rotation)
     return target
 
 

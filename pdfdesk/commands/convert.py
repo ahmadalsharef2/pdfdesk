@@ -22,7 +22,7 @@ SUPPORTED = IMAGE_EXT | OFFICE_EXT | TEXT_EXT | HTML_EXT | {".pdf", ".xps", ".ep
 
 
 def _soffice() -> str:
-    for c in ("soffice", "libreoffice"):
+    for c in ("soffice", "libreoffice", "/Applications/LibreOffice.app/Contents/MacOS/soffice"):     # the last: macOS
         p = shutil.which(c)
         if p:
             return p

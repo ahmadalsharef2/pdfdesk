@@ -1,5 +1,6 @@
 """The translation tables and the interface must not drift apart: every string passed to tr() has a German and
-an Arabic entry, and the tables carry no entries for strings the interface no longer shows."""
+an Arabic entry, and the tables carry no entries for strings the interface no longer shows. The interface is
+the desktop window (pdfdesk/) and the browser and phone apps (web/src)."""
 import ast
 import pathlib
 import re
@@ -7,6 +8,8 @@ import re
 from pdfdesk.lang import ar, de
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "pdfdesk"
+WEB = SRC.parent / "web" / "src"                      # the browser and phone apps use the same tables
+TS_STRING = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
 # keys built at run time rather than written as one literal: f"Paste {what} Here" with what from clipboard.describe()
 DYNAMIC = re.compile(r"^Paste (Comment|Object|Image|Text) Here$")
 
@@ -22,6 +25,10 @@ def _strings():
             elif isinstance(n, ast.Call) and getattr(n.func, "id", None) == "tr" and n.args \
                     and isinstance(n.args[0], ast.Constant):
                 keys.add(n.args[0].value)
+    for p in WEB.glob("*.ts"):
+        text = p.read_text()
+        literals |= set(TS_STRING.findall(text))
+        keys |= set(re.findall(r'\btr\("((?:[^"\\\n]|\\.)*)"', text))
     return literals, keys
 
 

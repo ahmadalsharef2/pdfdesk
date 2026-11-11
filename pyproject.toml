@@ -1,6 +1,6 @@
 [project]
 name = "pdfdesk"
-version = "0.2.7"
+version = "0.3.0"
 requires-python = ">=3.12"
 dependencies = [
   "pymupdf>=2.0", "pikepdf>=10.17", "PySide6>=6.12", "ocrmypdf>=17.13", "paddleocr>=3.7", "paddlepaddle==3.2.2", "pyHanko>=0.38", "pdf2docx>=0.5.13",
@@ -13,6 +13,9 @@ pdfdesk = "pdfdesk.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["pdfdesk*"]
+
+[tool.setuptools.package-data]
+pdfdesk = ["fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

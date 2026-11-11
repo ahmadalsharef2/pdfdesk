@@ -186,7 +186,7 @@ def add_text(doc, page: int, point, text: str, fontsize: float = 12, color=(0, 0
     """Add new text with its top-left at point (PDF units). An HTML box shapes and wraps any script;
     right-to-left text (Arabic, Hebrew) uses an installed font whose ToUnicode map extracts correctly."""
     p = doc[page - 1]
-    x, y = pymupdf.Point(point)
+    x, y = pymupdf.Point(point) * p.rotation_matrix       # as seen: on a rotated page the text stands upright
     rtl = bool(RTL.search(text))
     ffile = (fonts.find("Noto Sans Arabic") or fonts.unicode_font()) if rtl else (font and fonts.find(font))
     measure = pymupdf.Font(fontfile=ffile) if ffile else pymupdf.Font("helv")
@@ -206,11 +206,12 @@ def add_text(doc, page: int, point, text: str, fontsize: float = 12, color=(0, 0
         html = f'<div dir="rtl">{html}</div>'
     with adding(doc, page):                        # the Hand tool can pick the new text up afterwards
         for _ in range(4):
-            spare, _scale = p.insert_htmlbox(rect, html, css=css, archive=archive, scale_low=1)
+            spare, _scale = p.insert_htmlbox((rect * p.derotation_matrix).normalize(), html, css=css, archive=archive,
+                                             scale_low=1, rotate=p.rotation)
             if spare >= 0:
                 break
             rect.y1 += fontsize * 2
-    return rect
+    return (rect * p.derotation_matrix).normalize()
 
 
 def _esc(t: str) -> str:

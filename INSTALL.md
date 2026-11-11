@@ -1,6 +1,21 @@
 # Installing pdfdesk
 
-Tested on Zorin OS 18 (Ubuntu 24.04 base), Python 3.12.
+Each release has a file for every kind of device:
+
+| Device | File | How |
+|---|---|---|
+| Linux (Ubuntu 24.04+) | `pdfdesk_*_amd64.deb` | `sudo apt install ./pdfdesk_*_amd64.deb` |
+| Windows | `pdfdesk-setup-*.exe` | run it |
+| Mac (Apple silicon) | `pdfdesk-*-macos-arm64.dmg` | open it, drag pdfdesk to Applications. The first start: right-click the app > Open (macOS 15: System Settings > Privacy & Security > Open Anyway), because the app is not signed with an Apple Developer ID |
+| Android | `pdfdesk-*.apk` | open the file on the phone and allow the install |
+| iPhone, iPad | `pdfdesk-*-unsigned.ipa` | needs signing with an Apple ID first: Xcode, or a sideloading tool such as AltStore. The App Store and TestFlight need an Apple Developer account |
+| Any browser | `pdfdesk-web-*.zip` | unzip into any web space (https) and open it. After the first visit it works without a network, and the browser offers to install it as an app |
+
+The browser and phone editions do everything on the device and send nothing anywhere. They have no OCR, no
+digital signatures, no Edit Object, no export to Word or PDF/A and no e-invoice creation; the desktop editions do.
+
+The rest of this page is about running the desktop edition from source. Tested on Zorin OS 18 (Ubuntu 24.04
+base), Python 3.12.
 
 ## System packages (apt, need sudo)
 

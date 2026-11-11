@@ -1,0 +1,8 @@
+{
+  "appId": "io.github.ahmadalsharef2.pdfdesk",
+  "appName": "pdfdesk",
+  "webDir": "dist",
+  "plugins": {
+    "SystemBars": { "insetsHandling": "css", "initialViewportFitValueHint": "cover" }
+  }
+}

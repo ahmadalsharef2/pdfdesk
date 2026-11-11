@@ -1,0 +1,30 @@
+{
+  "name": "pdfdesk-web",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "runtime": "node scripts/runtime.mjs",
+    "dev": "npm run runtime && vite",
+    "build": "npm run runtime && tsc --noEmit && vite build",
+    "build:native": "npm run runtime && tsc --noEmit && PDFDESK_TARGET=native vite build && cap sync",
+    "preview": "vite preview",
+    "test": "node scripts/pytest.mjs && node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/ios": "^8.6.0",
+    "fflate": "^0.8.3",
+    "playwright": "^1.65.0",
+    "pyodide": "0.29.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3"
+  }
+}

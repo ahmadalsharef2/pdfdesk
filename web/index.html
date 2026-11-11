@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#b3261e" />
+    <meta name="description" content="pdfdesk: read, mark up, sign and organize PDF files. Works on this device, without a server." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <title>pdfdesk</title>
+    <style>
+      #splash { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; font: 16px system-ui, sans-serif; color: #444; background: #f3f3f3; }
+      #splash h1 { margin: 0; font-size: 28px; color: #b3261e; }
+      #splash p { margin: 0; max-width: 32ch; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="splash"><h1>pdfdesk</h1><div class="spinner"></div><p></p></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

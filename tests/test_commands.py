@@ -97,6 +97,19 @@ def test_add_text_latin_and_arabic():
     assert search.find(d[0], "بالعالم")
 
 
+def test_added_text_and_signature_stand_upright_on_a_rotated_page():
+    d = pymupdf.open()
+    d.new_page(width=400, height=600).set_rotation(90)          # a sideways scan: seen 600 wide, 400 high
+    p = d[0]
+    seen = pymupdf.Rect(100, 150, 300, 210)                     # where the signature box is on the screen
+    run("Text.Add", d, 1, pymupdf.Point(100, 100) * p.derotation_matrix, "Added line")
+    run("Sign.Place", d, 1, seen * p.derotation_matrix, {"kind": "typed", "name": "Ahmad"})
+    for word in ("Added", "Ahmad"):
+        box = pymupdf.Rect(next(w for w in d[0].get_text("words") if w[4] == word)[:4]) * d[0].rotation_matrix
+        assert box.width > box.height                           # reads left to right as seen
+    assert (seen + (-6, -6, 6, 6)).contains(box)                    # the signature is in its box, flourishes aside
+
+
 def test_edit_real_manual_heading(tmp_path):
     import pathlib
     import pytest

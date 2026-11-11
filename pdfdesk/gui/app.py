@@ -10,7 +10,7 @@ import sys
 import tempfile
 
 import pymupdf
-from PySide6.QtCore import QByteArray, QLocale, QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QLocale, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -1994,6 +1994,35 @@ class Main(QMainWindow):
         self.open_path(out)
 
 
+class _FileOpens(QObject):
+    """macOS hands a file opened from Finder (double-click, Open With) to the running app as an event, not as
+    a program argument."""
+
+    def __init__(self, open_path):
+        super().__init__()
+        self.open_path = open_path
+
+    def eventFilter(self, _obj, e):
+        if e.type() == QEvent.FileOpen and e.file():
+            self.open_path(e.file())
+            return True
+        return False
+
+
+def _licensed() -> bool:
+    """Ask for the product key until a valid one is stored; False when the user gives up."""
+    from ..core import license
+    while not license.valid(prefs.get("product_key")):
+        key, ok = QInputDialog.getText(None, tr("Product Key"), tr("Enter the product key to use pdfdesk."))
+        if not ok:
+            return False
+        if license.valid(key):
+            prefs.put("product_key", key.strip())
+        else:
+            QMessageBox.warning(None, tr("Product Key"), tr("This product key is not valid."))
+    return True
+
+
 def launch(action: str = "open", files: list[str] = (), lock=None):
     """Start the window. Launches that arrive while it starts are queued and handed over once it exists."""
     app = QApplication.instance() or QApplication(sys.argv[:1])
@@ -2002,10 +2031,14 @@ def launch(action: str = "open", files: list[str] = (), lock=None):
     app.setWindowIcon(app_icon())
     code = prefs.get("language") or QLocale.system().name()[:2]
     lang.install(app, code if code in lang.LANGUAGES else "en")
+    if not _licensed():
+        return 0
     from .. import instance
     early: list[tuple[str, list[str]]] = []
     window: list[Main] = []
     server = instance.serve(lambda a, p: window[0].receive(a, p) if window else early.append((a, p)))
+    opens = _FileOpens(lambda path: window[0].receive("open", [path]) if window else early.append(("open", [path])))
+    app.installEventFilter(opens)
     w = Main()
     window.append(w)
     w.show()

@@ -22,6 +22,11 @@ def _run_command(argv) -> int:
     import pymupdf
 
     from .commands import COMMANDS, run
+    from .core import license
+    from .gui import prefs
+    if not license.valid(os.environ.get("PDFDESK_KEY") or prefs.get("product_key")):
+        print("pdfdesk needs its product key: start the window once and enter it, or set PDFDESK_KEY.", file=sys.stderr)
+        return 2
     ap = argparse.ArgumentParser(prog="pdfdesk run")
     ap.add_argument("command", choices=sorted(COMMANDS))
     ap.add_argument("input", nargs="?")

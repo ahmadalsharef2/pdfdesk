@@ -16,7 +16,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 
-import pikepdf
+try:
+    import pikepdf
+except ImportError:          # the browser and phone builds have none: Object.* commands are left out there
+    pikepdf = None
 import pymupdf
 
 from .registry import command

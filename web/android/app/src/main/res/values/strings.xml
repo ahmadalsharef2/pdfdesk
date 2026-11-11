@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">pdfdesk</string>
+    <string name="title_activity_main">pdfdesk</string>
+    <string name="package_name">io.github.ahmadalsharef2.pdfdesk</string>
+    <string name="custom_url_scheme">io.github.ahmadalsharef2.pdfdesk</string>
+</resources>
