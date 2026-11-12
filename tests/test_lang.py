@@ -1,11 +1,11 @@
-"""The translation tables and the interface must not drift apart: every string passed to tr() has a German and
-an Arabic entry, and the tables carry no entries for strings the interface no longer shows. The interface is
-the desktop window (pdfdesk/) and the browser and phone apps (web/src)."""
+"""The translation tables and the interface must not drift apart: every string passed to tr() has a German, a
+French and an Arabic entry, and the tables carry no entries for strings the interface no longer shows. The
+interface is the desktop window (pdfdesk/) and the browser and phone apps (web/src)."""
 import ast
 import pathlib
 import re
 
-from pdfdesk.lang import ar, de
+from pdfdesk.lang import ar, de, fr
 
 SRC = pathlib.Path(__file__).resolve().parents[1] / "pdfdesk"
 WEB = SRC.parent / "web" / "src"                      # the browser and phone apps use the same tables
@@ -35,8 +35,9 @@ def _strings():
 def test_every_translated_string_is_in_both_tables():
     _literals, keys = _strings()
     assert sorted(k for k in keys if k not in de.STRINGS) == []
+    assert sorted(k for k in keys if k not in fr.STRINGS) == []
     assert sorted(k for k in keys if k not in ar.STRINGS) == []
-    assert set(de.STRINGS) == set(ar.STRINGS)
+    assert set(de.STRINGS) == set(fr.STRINGS) == set(ar.STRINGS)
 
 
 def test_tables_hold_no_strings_the_interface_no_longer_shows():

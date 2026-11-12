@@ -495,13 +495,14 @@ def test_auto_redact_arabic_digits():
     assert kinds == {"Email address", "Phone number (DE)"}
 
 
-@pytest.mark.parametrize("code", ["de", "ar"])
+@pytest.mark.parametrize("code", ["de", "fr", "ar"])
 def test_translations_keep_placeholders(code):
     import re
     lang.set_language(code)
     try:
         for en, s in lang._table.items():
             assert sorted(re.findall(r"\{[^}]*\}", en)) == sorted(re.findall(r"\{[^}]*\}", s)), en
-        assert lang.tr("Page {n}", n=3) != "Page 3"
+        assert lang.tr("Pages {part} are not in this document, which has {n} pages.", part="9", n=3) \
+            != "Pages 9 are not in this document, which has 3 pages."
     finally:
         lang.set_language("en")

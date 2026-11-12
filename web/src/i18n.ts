@@ -1,8 +1,8 @@
-// tr() as in the desktop app: the English text is the key, and the German and Arabic tables are the same ones
+// tr() as in the desktop app: the English text is the key, and the German, French and Arabic tables are the same ones
 // (pdfdesk/lang/), read from the Python side. tests/test_lang.py checks the strings used here against them.
 import { call } from "./engine";
 
-export const LANGUAGES: [string, string][] = [["en", "English"], ["de", "Deutsch"], ["ar", "العربية"]];
+export const LANGUAGES: [string, string][] = [["en", "English"], ["de", "Deutsch"], ["fr", "Français"], ["ar", "العربية"]];
 let table: Record<string, string> = {};
 let code = "en";
 

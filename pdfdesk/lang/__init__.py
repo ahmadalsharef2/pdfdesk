@@ -2,9 +2,9 @@
 string is the key, so untranslated strings fall back to English."""
 from __future__ import annotations
 
-from . import ar, de
+from . import ar, de, fr
 
-LANGUAGES = {"en": "English", "de": "Deutsch", "ar": "العربية"}
+LANGUAGES = {"en": "English", "de": "Deutsch", "fr": "Français", "ar": "العربية"}
 RTL = {"ar"}
 _code = "en"
 _table: dict[str, str] = {}
@@ -18,7 +18,7 @@ def tr(text: str, /, **values) -> str:
 def set_language(code: str):
     global _code, _table
     _code = code if code in LANGUAGES else "en"
-    _table = {"de": de.STRINGS, "ar": ar.STRINGS}.get(_code, {})
+    _table = {"de": de.STRINGS, "fr": fr.STRINGS, "ar": ar.STRINGS}.get(_code, {})
 
 
 def language() -> str:
@@ -27,7 +27,7 @@ def language() -> str:
 
 def ocr_languages() -> str:
     """Default OCR languages for the interface language (PaddleOCR codes)."""
-    return {"de": "de", "ar": "ar+en"}.get(_code, "en")
+    return {"de": "de", "fr": "fr", "ar": "ar+en"}.get(_code, "en")
 
 
 def is_rtl() -> bool:
